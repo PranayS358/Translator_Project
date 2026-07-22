@@ -1,0 +1,42 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// One Conversation per real-world contact, per channel. Both inbound and
+// outbound messages attach to the SAME conversation - this is what fixes
+// the "two separate inboxes" issue from v1.
+model Conversation {
+  id          String    @id @default(cuid())
+  channel     String    // "whatsapp" | "messenger" | "instagram"
+  contactKey  String    // normalized E.164 phone (WhatsApp) or PSID/IGSID (Messenger/Instagram)
+  displayName String?
+  createdAt   DateTime  @default(now())
+  messages    Message[]
+
+  @@unique([channel, contactKey])
+}
+
+model Message {
+  id               String       @id @default(cuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id])
+  direction        String       // "inbound" | "outbound"
+  originalText     String
+  detectedLanguage String?
+  translatedText   String?
+  targetLanguage   String?
+  createdAt        DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+model Settings {
+  id              Int    @id @default(1)
+  primaryLanguage String @default("en")
+  theme           String @default("light") // "light" | "dark"
+}
