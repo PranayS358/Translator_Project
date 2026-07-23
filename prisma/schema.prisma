@@ -15,6 +15,9 @@ model Conversation {
   channel     String    // "whatsapp" | "messenger" | "instagram"
   contactKey  String    // normalized E.164 phone (WhatsApp) or PSID/IGSID (Messenger/Instagram)
   displayName String?
+  favourite   Boolean   @default(false)
+  muted       Boolean   @default(false)
+  unreadCount Int       @default(0)
   createdAt   DateTime  @default(now())
   messages    Message[]
 
@@ -30,6 +33,11 @@ model Message {
   detectedLanguage String?
   translatedText   String?
   targetLanguage   String?
+  // "text" | "image" | "video" | "document" | "audio" | "location" | "contact"
+  messageType      String       @default("text")
+  mediaUrl         String?      @db.Text // data URL for images/video/docs/audio previews
+  fileName         String?
+  extra            String?      // JSON string: location {lat,lng} or contact {name,phone}
   createdAt        DateTime     @default(now())
 
   @@index([conversationId, createdAt])

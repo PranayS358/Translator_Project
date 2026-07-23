@@ -64,6 +64,13 @@ router.post('/', async (req, res) => {
       targetLanguage: primaryLanguage,
     });
 
+    if (!conversation.muted) {
+      await prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { unreadCount: { increment: 1 } },
+      });
+    }
+
     console.log(`📩 [whatsapp] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
 
     if (String(process.env.AUTO_REPLY).toLowerCase() === 'true') {

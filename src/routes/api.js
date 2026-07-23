@@ -2,11 +2,24 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
 const { translateText } = require('../translate');
-const { sendWhatsAppMessage } = require('../whatsapp');
+const {
+  sendWhatsAppMessage,
+  uploadWhatsAppMedia,
+  sendWhatsAppMedia,
+  sendWhatsAppLocation,
+  sendWhatsAppContact,
+} = require('../whatsapp');
 const { sendMessengerMessage, sendInstagramMessage } = require('../meta-channels');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { gregorianToHijri, hijriToGregorian, today } = require('../hijri');
+
+function messageTypeFromMime(mimeType = '') {
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  return 'document';
+}
 
 // ── Conversations ────────────────────────────────────────────────────────
 
@@ -70,6 +83,149 @@ router.post('/conversations/:id/reply', async (req, res) => {
   res.json({ message: saved, sent: !!sendResult });
 });
 
+// Update conversation flags: favourite, muted, unreadCount (used for
+// mute/favourite toggles and mark-as-read / mark-as-unread).
+router.patch('/conversations/:id', async (req, res) => {
+  const { favourite, muted, unreadCount } = req.body;
+  const data = {};
+  if (typeof favourite === 'boolean') data.favourite = favourite;
+  if (typeof muted === 'boolean') data.muted = muted;
+  if (typeof unreadCount === 'number') data.unreadCount = unreadCount;
+
+  try {
+    const conversation = await prisma.conversation.update({
+      where: { id: req.params.id },
+      data,
+    });
+    res.json(conversation);
+  } catch (err) {
+    res.status(404).json({ error: 'Conversation not found' });
+  }
+});
+
+// Clear chat — deletes every message in the conversation but keeps the
+// conversation itself (so it stays in the sidebar, just empty).
+router.delete('/conversations/:id/messages', async (req, res) => {
+  await prisma.message.deleteMany({ where: { conversationId: req.params.id } });
+  res.json({ cleared: true });
+});
+
+// Delete chat — removes the conversation (and its messages) from the list
+// entirely. Messages are deleted first since they reference the conversation.
+router.delete('/conversations/:id', async (req, res) => {
+  await prisma.message.deleteMany({ where: { conversationId: req.params.id } });
+  try {
+    await prisma.conversation.delete({ where: { id: req.params.id } });
+    res.json({ deleted: true });
+  } catch (err) {
+    res.status(404).json({ error: 'Conversation not found' });
+  }
+});
+
+// Send an image/video/document/audio attachment. Expects a base64 data URL
+// from the browser's file picker, camera capture, or voice recorder.
+router.post('/conversations/:id/media', async (req, res) => {
+  const { dataUrl, fileName, caption } = req.body;
+  if (!dataUrl) return res.status(400).json({ error: 'dataUrl is required' });
+
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.id } });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+  let sendResult = null;
+  let mimeType = 'application/octet-stream';
+
+  if (conversation.channel === 'whatsapp') {
+    const uploaded = await uploadWhatsAppMedia(dataUrl, fileName);
+    if (uploaded) {
+      mimeType = uploaded.mimeType;
+      const type = messageTypeFromMime(mimeType);
+      sendResult = await sendWhatsAppMedia(
+        conversation.contactKey.replace('+', ''),
+        uploaded.mediaId,
+        type,
+        { caption, fileName }
+      );
+    }
+  } else {
+    // Messenger/Instagram attachment sends require a publicly hosted file
+    // URL (their Send API doesn't accept raw base64/binary uploads like
+    // WhatsApp does). Not wired up yet — the file is still saved below so
+    // it shows correctly in your own dashboard thread.
+    console.warn(`⚠️  Media send not implemented for channel "${conversation.channel}" yet — saved locally only.`);
+    const match = /^data:([^;]+);/.exec(dataUrl);
+    if (match) mimeType = match[1];
+  }
+
+  const messageType = messageTypeFromMime(mimeType);
+  const saved = await addMessage(conversation.id, {
+    direction: 'outbound',
+    originalText: caption || `[${messageType}]`,
+    translatedText: caption || `[${messageType}]`,
+    detectedLanguage: 'agent',
+    messageType,
+    mediaUrl: dataUrl,
+    fileName: fileName || null,
+  });
+
+  res.json({ message: saved, sent: !!sendResult });
+});
+
+// Send a location pin.
+router.post('/conversations/:id/location', async (req, res) => {
+  const { latitude, longitude } = req.body;
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return res.status(400).json({ error: 'latitude and longitude (numbers) are required' });
+  }
+
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.id } });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+  let sendResult = null;
+  if (conversation.channel === 'whatsapp') {
+    sendResult = await sendWhatsAppLocation(conversation.contactKey.replace('+', ''), latitude, longitude);
+  } else {
+    console.warn(`⚠️  Location send not implemented for channel "${conversation.channel}" yet — saved locally only.`);
+  }
+
+  const saved = await addMessage(conversation.id, {
+    direction: 'outbound',
+    originalText: '[location]',
+    translatedText: '[location]',
+    detectedLanguage: 'agent',
+    messageType: 'location',
+    extra: JSON.stringify({ latitude, longitude }),
+  });
+
+  res.json({ message: saved, sent: !!sendResult });
+});
+
+// Send a contact card.
+router.post('/conversations/:id/contact', async (req, res) => {
+  const { name, phone } = req.body;
+  if (!name || !phone) return res.status(400).json({ error: 'name and phone are required' });
+
+  const conversation = await prisma.conversation.findUnique({ where: { id: req.params.id } });
+  if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+
+  let sendResult = null;
+  if (conversation.channel === 'whatsapp') {
+    sendResult = await sendWhatsAppContact(conversation.contactKey.replace('+', ''), name, phone);
+  } else {
+    console.warn(`⚠️  Contact card send not implemented for channel "${conversation.channel}" yet — saved locally only.`);
+  }
+
+  const saved = await addMessage(conversation.id, {
+    direction: 'outbound',
+    originalText: `[contact] ${name} — ${phone}`,
+    translatedText: `[contact] ${name} — ${phone}`,
+    detectedLanguage: 'agent',
+    messageType: 'contact',
+    extra: JSON.stringify({ name, phone }),
+  });
+
+  res.json({ message: saved, sent: !!sendResult });
+});
+
 // Simulate an inbound message on any channel, for testing without a real
 // WhatsApp/Messenger/Instagram account connected.
 router.post('/simulate-message', async (req, res) => {
@@ -93,6 +249,14 @@ router.post('/simulate-message', async (req, res) => {
     translatedText,
     targetLanguage: primaryLanguage,
   });
+
+  // New inbound message → bump the unread badge (unless the chat is muted).
+  if (!conversation.muted) {
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { unreadCount: { increment: 1 } },
+    });
+  }
 
   res.json(saved);
 });

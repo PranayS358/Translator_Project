@@ -227,7 +227,7 @@ the end of this step before pointing real customer traffic at it.
 4. Settings:
    - Build command: `npm install && npx prisma generate`
    - Start command: `npm start`
-   - Instance type: **Free** to start (see caveat below)
+   - Instance type: **Free** to start (see caveat below) 
    - Region: pick whichever is closest to most of your users
 5. Under **Environment**, add every variable from your local `.env` — same
    names, same values: `DATABASE_URL`, `WHATSAPP_TOKEN`,
@@ -287,11 +287,25 @@ Meta still restricts who's allowed to message it until you complete this
 step. **This is the actual gate between "working for me" and "working for
 anyone in the world."**
 
-1. **Business verification** — Meta Business Suite → Business Settings →
-   Security Center → Start verification. You'll need a registered business
-   (legal business name, address, and a document like a tax/company
-   registration number) tied to your Meta Business Portfolio. A purely
-   personal account generally can't complete this.
+1. **Business verification** — Meta renamed/reshuffled this a while back, so
+   if you go looking for "Business Settings" inside Meta Business Suite and
+   can't find it, that's expected — it's no longer a tab in there. Use one
+   of these instead:
+   - **Fastest:** go directly to **https://business.facebook.com/settings**
+     — this drops you straight into the back-end admin area (now sometimes
+     labeled **Meta Business Portfolio**) regardless of which front-end
+     dashboard you were just in.
+   - **Manual path:** from Meta Business Suite, click the **☰ "All tools"**
+     menu (far left) → **Ads Manager** → click **☰ "All tools"** again
+     (yes, a second time, inside Ads Manager this time) → under **Manage
+     Business**, click **Business Settings**.
+   Once you're in Business Settings, business verification itself lives
+   under **Business Info** (or a **Security Center** entry if your account
+   still shows one — Meta is mid-rollout on this, so it varies by account).
+   You'll need a registered business (legal business name, address, and a
+   document like a tax/company registration number) tied to your Meta
+   Business Portfolio. A purely personal account generally can't complete
+   this.
 2. **App Review** — in your Meta App dashboard → **App Review → Permissions
    and Features**, request `whatsapp_business_messaging` (and
    `pages_messaging` too if you're using Messenger/Instagram). Meta will

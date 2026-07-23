@@ -20,6 +20,8 @@ app.use(helmet({ contentSecurityPolicy: false }));
 // Parse JSON but also keep the raw bytes around - required for verifying
 // Meta's X-Hub-Signature-256 header on webhook calls.
 app.use(express.json({
+  limit: '20mb', // raised from the default 100kb so base64 image/audio/video
+                 // attachments from the dashboard's attach/camera/mic buttons fit
   verify: (req, res, buf) => { req.rawBody = buf; },
 }));
 

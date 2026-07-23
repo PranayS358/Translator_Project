@@ -20,8 +20,10 @@
           <option value="ur">Urdu</option>
           <option value="hi">Hindi</option>
         </select>
-        <button id="theme-toggle" class="icon-btn" title="Toggle dark/light theme">🌙</button>
-        <button id="calendar-toggle" class="icon-btn" title="Hijri/Gregorian calendar">📅</button>
+        <button id="theme-toggle" class="icon-btn" title="Toggle dark/light theme"></button>
+        <button id="calendar-toggle" class="icon-btn" title="Hijri/Gregorian calendar">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="16" y1="3" x2="16" y2="7"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+        </button>
       </div>
     </header>
 
@@ -31,7 +33,9 @@
       <aside class="sidebar">
         <div class="sidebar-header">
           <h2>Conversations</h2>
-          <button id="refresh-conversations" class="icon-btn small" title="Refresh">↻</button>
+          <button id="refresh-conversations" class="icon-btn small" title="Refresh">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
         </div>
         <div id="conversation-list" class="conversation-list">
           <p class="empty-hint">No conversations yet.</p>
@@ -52,12 +56,53 @@
 
       <!-- Active conversation thread -->
       <main class="thread-panel">
-        <div id="thread-header" class="thread-header">Select a conversation</div>
+        <div class="thread-header" id="thread-header-bar">
+          <span id="thread-header">Select a conversation</span>
+          <div class="thread-header-actions">
+            <button id="menu-toggle" class="icon-btn small" title="Chat menu" style="display:none">☰</button>
+            <div id="menu-dropdown" class="dropdown-menu hidden">
+              <button data-action="search">Search</button>
+              <button data-action="media">Media, links and docs</button>
+              <button data-action="theme">Chat theme</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="search-bar" class="search-bar hidden">
+          <input id="search-input" type="text" placeholder="Search in this chat..." />
+          <button id="search-close" class="icon-btn small">✕</button>
+        </div>
+
+        <div id="media-panel" class="media-panel hidden">
+          <div class="media-panel-header">
+            <span>Media, links &amp; docs</span>
+            <button id="media-panel-close" class="icon-btn small">✕</button>
+          </div>
+          <div id="media-panel-body"></div>
+        </div>
+
         <div id="thread-messages" class="thread-messages"></div>
+
         <form id="reply-form" class="reply-form" style="display:none">
+          <button type="button" id="attach-toggle" class="icon-btn" title="Attach">📎</button>
+          <div id="attach-menu" class="dropdown-menu hidden">
+            <button data-attach="image">🖼️ Image</button>
+            <button data-attach="document">📄 Document</button>
+            <button data-attach="video">🎬 Video</button>
+            <button data-attach="contact">👤 Contact</button>
+            <button data-attach="location">📍 Location</button>
+            <button data-attach="poll">📊 Poll</button>
+            <button data-attach="event">📅 Event</button>
+          </div>
           <input id="reply-text" type="text" placeholder="Type a reply — it'll be translated automatically..." />
+          <button type="button" id="camera-toggle" class="icon-btn" title="Camera">📷</button>
+          <button type="button" id="mic-toggle" class="icon-btn" title="Record voice">🎙️</button>
           <button type="submit">Send</button>
         </form>
+
+        <input type="file" id="file-image" accept="image/*" style="display:none" />
+        <input type="file" id="file-document" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip" style="display:none" />
+        <input type="file" id="file-video" accept="video/*" style="display:none" />
       </main>
 
       <!-- Calendar side panel -->
@@ -76,6 +121,30 @@
         <p id="hijri-result"></p>
       </aside>
 
+    </div>
+  </div>
+
+  <!-- Chat theme picker modal -->
+  <div id="theme-modal" class="modal hidden">
+    <div class="modal-box theme-modal-box">
+      <h3>Chat theme</h3>
+      <div id="theme-options" class="theme-options-grid"></div>
+      <div class="modal-actions">
+        <button id="theme-save">Save</button>
+        <button id="theme-cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Camera capture modal -->
+  <div id="camera-modal" class="modal hidden">
+    <div class="modal-box">
+      <video id="camera-video" autoplay playsinline></video>
+      <canvas id="camera-canvas" style="display:none"></canvas>
+      <div class="modal-actions">
+        <button id="camera-capture">📸 Capture &amp; send</button>
+        <button id="camera-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 
