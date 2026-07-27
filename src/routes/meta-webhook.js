@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
 const { translateText } = require('../translate');
-const { sendMessengerMessage, sendInstagramMessage } = require('../meta-channels');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
 
@@ -68,20 +67,6 @@ router.post('/', async (req, res) => {
       }
 
       console.log(`📩 [${channel}] [${detectedLanguage} → ${primaryLanguage}] ${senderId}: "${text}" → "${translatedText}"`);
-
-      if (String(process.env.AUTO_REPLY).toLowerCase() === 'true') {
-        const sendFn = channel === 'instagram' ? sendInstagramMessage : sendMessengerMessage;
-        const sendResult = await sendFn(senderId, `🌐 ${translatedText}`);
-        if (sendResult) {
-          await addMessage(conversation.id, {
-            direction: 'outbound',
-            originalText: `🌐 ${translatedText}`,
-            detectedLanguage: primaryLanguage,
-            translatedText: `🌐 ${translatedText}`,
-            targetLanguage: primaryLanguage,
-          });
-        }
-      }
     }
   } catch (err) {
     console.error('Messenger/Instagram webhook processing error:', err.message);

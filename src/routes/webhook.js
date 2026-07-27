@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
 const { translateText } = require('../translate');
-const { sendWhatsAppMessage } = require('../whatsapp');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
@@ -82,19 +81,6 @@ router.post('/', async (req, res) => {
     }
 
     console.log(`📩 [whatsapp] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
-
-    if (String(process.env.AUTO_REPLY).toLowerCase() === 'true') {
-      const sendResult = await sendWhatsAppMessage(contactKey.replace('+', ''), `🌐 ${translatedText}`);
-      if (sendResult) {
-        await addMessage(conversation.id, {
-          direction: 'outbound',
-          originalText: `🌐 ${translatedText}`,
-          detectedLanguage: primaryLanguage,
-          translatedText: `🌐 ${translatedText}`,
-          targetLanguage: primaryLanguage,
-        });
-      }
-    }
   } catch (err) {
     console.error('WhatsApp webhook processing error:', err.message);
   }
