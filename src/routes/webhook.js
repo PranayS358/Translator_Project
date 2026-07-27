@@ -36,7 +36,17 @@ router.post('/', async (req, res) => {
     const value = change?.value;
     const message = value?.messages?.[0];
 
-    if (!message) return; // delivery/read status update, not a new message
+    if (!message) {
+      const status = value?.statuses?.[0];
+      if (status) {
+        const errInfo = status.errors?.[0];
+        console.log(
+          `📶 WhatsApp delivery status: id=${status.id} recipient=${status.recipient_id} status=${status.status}` +
+          (errInfo ? ` ERROR code=${errInfo.code} title="${errInfo.title}" detail="${errInfo.error_data?.details || ''}"` : '')
+        );
+      }
+      return; // delivery/read status update, not a new message
+    }
 
     const text = message.text?.body;
     if (!text) {

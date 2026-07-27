@@ -1,0 +1,10 @@
+{
+  "appId": "com.vytrionsolutions.watranslator",
+  "appName": "WA Translator",
+  "webDir": "public",
+  "server": {
+    "url": "https://translator-project-sw7g.onrender.com",
+    "cleartext": false,
+    "androidScheme": "https"
+  }
+}
