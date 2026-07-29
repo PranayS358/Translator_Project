@@ -16,7 +16,15 @@ const app = express();
 // of throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
 app.set('trust proxy', 1);
 
-app.use(helmet({ contentSecurityPolicy: false }));
+// crossOriginResourcePolicy defaults to "same-origin", which silently blocks
+// the embeddable widget script (public/widget-embed/chat-widget.js) and the
+// /widget-api/* responses from ever loading on a client's own site (Netlify,
+// Myntra, Amazon, whoever) - the whole point of this widget is to be fetched
+// cross-origin, so that policy has to be relaxed.
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+}));
 
 // Parse JSON but also keep the raw bytes around - required for verifying
 // Meta's X-Hub-Signature-256 header on webhook calls.
