@@ -50,6 +50,7 @@
     '.wat-panel.open{display:flex;}' +
     '.wat-header{background:' + ACCENT + ';color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:14px;}' +
     '.wat-header button{background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;}' +
+    '.wat-header .wat-lang-change{font-size:15px;margin-right:10px;}' +
     '.wat-body{flex:1;overflow-y:auto;padding:12px;background:#f6f7f9;display:flex;flex-direction:column;gap:8px;}' +
     '.wat-msg{max-width:78%;padding:8px 12px;border-radius:10px;font-size:13px;line-height:1.4;word-wrap:break-word;}' +
     '.wat-msg.me{align-self:flex-end;background:' + ACCENT + ';color:#fff;}' +
@@ -77,7 +78,12 @@
   var panel = document.createElement('div');
   panel.className = 'wat-panel';
   panel.innerHTML =
-    '<div class="wat-header"><span>' + TITLE + '</span><button class="wat-close" aria-label="Close">✕</button></div>' +
+    '<div class="wat-header"><span>' + TITLE + '</span>' +
+      '<span>' +
+        '<button class="wat-lang-change" aria-label="Change language" title="Change language">🌐</button>' +
+        '<button class="wat-close" aria-label="Close">✕</button>' +
+      '</span>' +
+    '</div>' +
     '<div class="wat-lang" style="display:none">' +
       'Pick your language to start chatting:' +
       '<select class="wat-lang-select"></select>' +
@@ -138,6 +144,22 @@
     visitorLanguage = langSelect.value;
     localStorage.setItem('wat_visitor_language', visitorLanguage);
     showChatUI();
+  });
+
+  // Lets a visitor correct their language at any point instead of being
+  // stuck with whatever they (or a stale browser session) picked first -
+  // every message from here on uses the newly selected language, both
+  // for what they send and for how the agent's replies are translated back.
+  panel.querySelector('.wat-lang-change').addEventListener('click', function () {
+    if (langSelect.value) {
+      // preselect their current language rather than defaulting to English
+      var current = localStorage.getItem('wat_visitor_language');
+      if (current) langSelect.value = current;
+    }
+    body.style.display = 'none';
+    footer.style.display = 'none';
+    waRow.style.display = 'none';
+    langBox.style.display = 'block';
   });
 
   bubble.addEventListener('click', function () {
