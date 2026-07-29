@@ -22,6 +22,11 @@ model Conversation {
   // chat there" - inbound WhatsApp messages from this number then merge into
   // THIS conversation instead of creating a separate whatsapp-channel one.
   linkedWhatsapp String?   @unique
+  // Auto-detected (via franc) from the visitor's first webchat message, or
+  // explicitly set if they use the widget's "change language" button. Locked
+  // in for the rest of the conversation so every message - both directions -
+  // consistently uses the same language instead of re-detecting each time.
+  customerLanguage String?
   createdAt      DateTime  @default(now())
   messages       Message[]
 

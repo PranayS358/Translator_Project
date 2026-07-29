@@ -11,6 +11,7 @@ const prisma = require('../db');
 const { translateBetween } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
+const { detectLanguage } = require('../langDetect');
 
 router.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -25,10 +26,21 @@ async function getPrimaryLanguage() {
   return settings.primaryLanguage;
 }
 
-// A visitor sends a message from the widget. Creates the webchat
-// conversation on first contact, translates into the site's configured
-// primary language, and returns the saved (translated) message so the
-// widget can also show the agent's-language version if it wants to.
+// A visitor sends a message from the widget. Figures out (or reuses) the
+// conversation's locked-in language, creates the webchat conversation on
+// first contact, translates into the site's configured primary language,
+// and returns the saved (translated) message.
+//
+// Language handling, in priority order:
+//   1. An explicit `language` in the request - only sent when the visitor
+//      manually changes language via the widget's "change language" button.
+//      Always wins and overwrites the locked-in language from here on.
+//   2. The conversation's already-locked `customerLanguage`, if this isn't
+//      the first message - keeps the WHOLE conversation in one language
+//      instead of re-detecting (and potentially flip-flopping on) every
+//      message.
+//   3. Auto-detected from the text itself (via franc) - only happens once,
+//      on the very first message of a brand new conversation.
 router.post('/message', async (req, res) => {
   const { visitorId, text, language } = req.body;
   if (!visitorId || !text || !text.trim()) {
@@ -36,9 +48,30 @@ router.post('/message', async (req, res) => {
   }
 
   const primaryLanguage = await getPrimaryLanguage();
-  const customerLanguage = language || 'en';
 
-  const conversation = await getOrCreateConversation('webchat', visitorId, null);
+  let conversation = await prisma.conversation.findUnique({
+    where: { channel_contactKey: { channel: 'webchat', contactKey: visitorId } },
+  });
+
+  let customerLanguage;
+  if (language) {
+    customerLanguage = language;
+  } else if (conversation?.customerLanguage) {
+    customerLanguage = conversation.customerLanguage;
+  } else {
+    customerLanguage = await detectLanguage(text, 'en');
+  }
+
+  if (!conversation) {
+    conversation = await prisma.conversation.create({
+      data: { channel: 'webchat', contactKey: visitorId, customerLanguage },
+    });
+  } else if (conversation.customerLanguage !== customerLanguage) {
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { customerLanguage },
+    });
+  }
 
   const { translatedText } = await translateBetween(text, customerLanguage, primaryLanguage);
 
@@ -57,7 +90,7 @@ router.post('/message', async (req, res) => {
     });
   }
 
-  res.json({ message: saved });
+  res.json({ message: saved, detectedLanguage: customerLanguage });
 });
 
 // The widget polls this to render the full thread, including the agent's

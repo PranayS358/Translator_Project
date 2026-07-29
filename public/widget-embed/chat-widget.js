@@ -134,11 +134,11 @@
     loadMessages();
   }
 
-  if (visitorLanguage) {
-    showChatUI();
-  } else {
-    langBox.style.display = 'block';
-  }
+  // No more forcing a language pick before chatting starts - the backend
+  // auto-detects the visitor's language from their first message and locks
+  // it in for the rest of the conversation. The picker only reappears if
+  // they explicitly tap "change language" below.
+  showChatUI();
 
   langGo.addEventListener('click', function () {
     visitorLanguage = langSelect.value;
@@ -151,11 +151,11 @@
   // every message from here on uses the newly selected language, both
   // for what they send and for how the agent's replies are translated back.
   panel.querySelector('.wat-lang-change').addEventListener('click', function () {
-    if (langSelect.value) {
-      // preselect their current language rather than defaulting to English
-      var current = localStorage.getItem('wat_visitor_language');
-      if (current) langSelect.value = current;
-    }
+    // Preselect whatever they're currently using (explicit override, or
+    // whatever the backend auto-detected, echoed back on the last send)
+    // rather than defaulting the dropdown back to English.
+    var current = visitorLanguage || localStorage.getItem('wat_visitor_language');
+    if (current) langSelect.value = current;
     body.style.display = 'none';
     footer.style.display = 'none';
     waRow.style.display = 'none';
@@ -194,13 +194,26 @@
     var text = input.value.trim();
     if (!text) return;
     input.value = '';
+    // Only send `language` when the visitor explicitly picked one via
+    // "change language" - otherwise leave it out so the backend auto-detects
+    // (first message) or keeps using the conversation's already-locked
+    // language (every message after that).
     fetch(API_BASE + '/widget-api/message', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visitorId: visitorId, text: text, language: visitorLanguage }),
+      body: JSON.stringify({ visitorId: visitorId, text: text, language: visitorLanguage || undefined }),
     })
       .then(function (r) { return r.json(); })
-      .then(function () { loadMessages(); })
+      .then(function (data) {
+        // Keep local state in sync with whatever the backend locked in
+        // (auto-detected on message 1, or whatever we explicitly sent) so
+        // the "change language" picker preselects the right one later.
+        if (data.detectedLanguage) {
+          visitorLanguage = data.detectedLanguage;
+          localStorage.setItem('wat_visitor_language', visitorLanguage);
+        }
+        loadMessages();
+      })
       .catch(function () {});
   }
 
@@ -235,6 +248,6 @@
   });
 
   setInterval(function () {
-    if (visitorLanguage && panel.classList.contains('open')) loadMessages();
+    if (panel.classList.contains('open')) loadMessages();
   }, 4000);
 })();

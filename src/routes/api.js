@@ -53,13 +53,20 @@ router.post('/conversations/:id/reply', async (req, res) => {
   const conversation = await prisma.conversation.findUnique({ where: { id: req.params.id } });
   if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
 
-  const lastInbound = await prisma.message.findFirst({
-    where: { conversationId: conversation.id, direction: 'inbound' },
-    orderBy: { createdAt: 'desc' },
-  });
-  const targetLang = lastInbound?.detectedLanguage && lastInbound.detectedLanguage !== 'unknown'
-    ? lastInbound.detectedLanguage
-    : 'en';
+  // Webchat conversations lock in a single language for their whole
+  // lifetime (see src/routes/widget.js) - prefer that over the per-message
+  // heuristic below, so replies always land in the same language the
+  // visitor has been consistently chatting in.
+  let targetLang = conversation.customerLanguage;
+  if (!targetLang) {
+    const lastInbound = await prisma.message.findFirst({
+      where: { conversationId: conversation.id, direction: 'inbound' },
+      orderBy: { createdAt: 'desc' },
+    });
+    targetLang = lastInbound?.detectedLanguage && lastInbound.detectedLanguage !== 'unknown'
+      ? lastInbound.detectedLanguage
+      : 'en';
+  }
 
   const { translatedText } = await translateText(text, targetLang);
 
