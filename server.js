@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const whatsappWebhook = require('./src/routes/webhook');
 const metaWebhook = require('./src/routes/meta-webhook');
 const apiRouter = require('./src/routes/api');
+const widgetApiRouter = require('./src/routes/widget');
 const { requireApiKey, apiRateLimiter } = require('./src/security');
 
 const app = express();
@@ -41,6 +42,10 @@ app.get('/client-config', (req, res) => {
 
 app.use('/api', apiRateLimiter, requireApiKey, apiRouter);
 
+// Public embeddable chat widget API (no API key - see src/routes/widget.js
+// for why). Rate-limited the same as everything else to curb abuse.
+app.use('/widget-api', apiRateLimiter, widgetApiRouter);
+
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -51,5 +56,6 @@ app.listen(PORT, () => {
   console.log(`🚀  Translator running at http://localhost:${PORT}`);
   console.log(`📡  WhatsApp webhook:              http://localhost:${PORT}/webhook`);
   console.log(`📡  Messenger/Instagram webhook:   http://localhost:${PORT}/webhook/meta`);
+  console.log(`💬  Widget script:                 http://localhost:${PORT}/widget-embed/chat-widget.js`);
   console.log('===========================================================\n');
 });

@@ -70,6 +70,16 @@ router.post('/conversations/:id/reply', async (req, res) => {
     sendResult = await sendMessengerMessage(conversation.contactKey, translatedText);
   } else if (conversation.channel === 'instagram') {
     sendResult = await sendInstagramMessage(conversation.contactKey, translatedText);
+  } else if (conversation.channel === 'webchat') {
+    // No external API call needed - the widget delivers this by polling
+    // GET /widget-api/messages, so it always counts as "sent".
+    sendResult = { delivered: 'widget' };
+    // If the visitor also linked their own WhatsApp number ("Continue on
+    // WhatsApp"), send it there too so the reply reaches them even if
+    // they've closed the browser tab and moved to WhatsApp entirely.
+    if (conversation.linkedWhatsapp) {
+      await sendWhatsAppMessage(conversation.linkedWhatsapp.replace('+', ''), translatedText);
+    }
   }
 
   const saved = await addMessage(conversation.id, {

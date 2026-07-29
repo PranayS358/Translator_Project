@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
-const { translateText } = require('../translate');
+const { translateText, translateBetween } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
@@ -61,9 +61,30 @@ router.post('/', async (req, res) => {
     });
     const primaryLanguage = settings.primaryLanguage;
 
-    const { translatedText, detectedLanguage } = await translateText(text, primaryLanguage);
+    // If this number was linked from a webchat widget session ("Continue on
+    // WhatsApp"), route the message into that SAME conversation instead of
+    // creating a separate whatsapp-channel one - that's what makes the two
+    // channels feel like one continuous thread to the customer.
+    const linkedConversation = await prisma.conversation.findFirst({
+      where: { linkedWhatsapp: contactKey },
+    });
 
-    const conversation = await getOrCreateConversation('whatsapp', contactKey, displayName);
+    let conversation, translatedText, detectedLanguage;
+
+    if (linkedConversation) {
+      conversation = linkedConversation;
+      const lastInbound = await prisma.message.findFirst({
+        where: { conversationId: conversation.id, direction: 'inbound' },
+        orderBy: { createdAt: 'desc' },
+      });
+      const sourceLang = lastInbound?.detectedLanguage && lastInbound.detectedLanguage !== 'unknown'
+        ? lastInbound.detectedLanguage
+        : 'en';
+      ({ translatedText, detectedLanguage } = await translateBetween(text, sourceLang, primaryLanguage));
+    } else {
+      conversation = await getOrCreateConversation('whatsapp', contactKey, displayName);
+      ({ translatedText, detectedLanguage } = await translateText(text, primaryLanguage));
+    }
 
     await addMessage(conversation.id, {
       direction: 'inbound',
@@ -80,7 +101,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    console.log(`📩 [whatsapp] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
+    console.log(`📩 [whatsapp${linkedConversation ? '→webchat' : ''}] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
   } catch (err) {
     console.error('WhatsApp webhook processing error:', err.message);
   }

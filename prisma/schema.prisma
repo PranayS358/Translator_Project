@@ -11,15 +11,19 @@ generator client {
 // outbound messages attach to the SAME conversation - this is what fixes
 // the "two separate inboxes" issue from v1.
 model Conversation {
-  id          String    @id @default(cuid())
-  channel     String    // "whatsapp" | "messenger" | "instagram"
-  contactKey  String    // normalized E.164 phone (WhatsApp) or PSID/IGSID (Messenger/Instagram)
-  displayName String?
-  favourite   Boolean   @default(false)
-  muted       Boolean   @default(false)
-  unreadCount Int       @default(0)
-  createdAt   DateTime  @default(now())
-  messages    Message[]
+  id             String    @id @default(cuid())
+  channel        String    // "whatsapp" | "messenger" | "instagram" | "webchat"
+  contactKey     String    // normalized E.164 phone (WhatsApp), PSID/IGSID (Messenger/Instagram), or visitorId (webchat)
+  displayName    String?
+  favourite      Boolean   @default(false)
+  muted          Boolean   @default(false)
+  unreadCount    Int       @default(0)
+  // Set when a webchat visitor links their own WhatsApp number to "continue this
+  // chat there" - inbound WhatsApp messages from this number then merge into
+  // THIS conversation instead of creating a separate whatsapp-channel one.
+  linkedWhatsapp String?   @unique
+  createdAt      DateTime  @default(now())
+  messages       Message[]
 
   @@unique([channel, contactKey])
 }
