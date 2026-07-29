@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
-const { translateText } = require('../translate');
+const { translateText, translateBetween } = require('../translate');
 const {
   sendWhatsAppMessage,
   uploadWhatsAppMedia,
@@ -68,7 +68,14 @@ router.post('/conversations/:id/reply', async (req, res) => {
       : 'en';
   }
 
-  const { translatedText } = await translateText(text, targetLang);
+  // The agent always writes in the dashboard's configured primary language,
+  // not something we need to guess - translateText()'s auto-detect only
+  // distinguishes Arabic vs. English, so it silently skipped translation
+  // whenever the primary language was anything else (e.g. Hindi got
+  // misread as English and passed through untranslated). Using the known
+  // primary language as the explicit source fixes that for every language.
+  const settings = await prisma.settings.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } });
+  const { translatedText } = await translateBetween(text, settings.primaryLanguage, targetLang);
 
   let sendResult = null;
   if (conversation.channel === 'whatsapp') {
