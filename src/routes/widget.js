@@ -8,10 +8,9 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../db');
-const { translateBetween } = require('../translate');
+const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
-const { detectLanguage } = require('../langDetect');
 
 router.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -39,8 +38,11 @@ async function getPrimaryLanguage() {
 //      the first message - keeps the WHOLE conversation in one language
 //      instead of re-detecting (and potentially flip-flopping on) every
 //      message.
-//   3. Auto-detected from the text itself (via franc) - only happens once,
-//      on the very first message of a brand new conversation.
+//   3. Auto-detected from the text itself - only happens once, on the very
+//      first message of a brand new conversation. Prefers Google's own
+//      auto-detect (via detectAndTranslate in src/translate.js) since that's
+//      what actually recognizes Hinglish and other script-ambiguous text;
+//      falls back to franc when Google isn't configured.
 router.post('/message', async (req, res) => {
   const { visitorId, text, language } = req.body;
   if (!visitorId || !text || !text.trim()) {
@@ -54,12 +56,16 @@ router.post('/message', async (req, res) => {
   });
 
   let customerLanguage;
+  let translatedText;
+
   if (language) {
     customerLanguage = language;
+    ({ translatedText } = await translateBetween(text, customerLanguage, primaryLanguage));
   } else if (conversation?.customerLanguage) {
     customerLanguage = conversation.customerLanguage;
+    ({ translatedText } = await translateBetween(text, customerLanguage, primaryLanguage));
   } else {
-    customerLanguage = await detectLanguage(text, 'en');
+    ({ translatedText, detectedLanguage: customerLanguage } = await detectAndTranslate(text, primaryLanguage));
   }
 
   if (!conversation) {
@@ -72,8 +78,6 @@ router.post('/message', async (req, res) => {
       data: { customerLanguage },
     });
   }
-
-  const { translatedText } = await translateBetween(text, customerLanguage, primaryLanguage);
 
   const saved = await addMessage(conversation.id, {
     direction: 'inbound',
