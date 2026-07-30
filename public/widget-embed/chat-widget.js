@@ -48,16 +48,15 @@
     'background:#fff;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.3);display:none;flex-direction:column;' +
     'overflow:hidden;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
     '.wat-panel.open{display:flex;}' +
-    '.wat-header{background:' + ACCENT + ';color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:14px;}' +
+    '.wat-header{background:' + ACCENT + ';color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:14px;gap:8px;}' +
     '.wat-header button{background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;}' +
-    '.wat-header .wat-lang-change{font-size:15px;margin-right:10px;}' +
+    '.wat-header .wat-lang-select{margin-right:4px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.6);' +
+    'background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;cursor:pointer;max-width:110px;}' +
+    '.wat-header .wat-lang-select option{color:#111827;}' +
     '.wat-body{flex:1;overflow-y:auto;padding:12px;background:#f6f7f9;display:flex;flex-direction:column;gap:8px;}' +
     '.wat-msg{max-width:78%;padding:8px 12px;border-radius:10px;font-size:13px;line-height:1.4;word-wrap:break-word;}' +
     '.wat-msg.me{align-self:flex-end;background:' + ACCENT + ';color:#fff;}' +
     '.wat-msg.agent{align-self:flex-start;background:#e5e7eb;color:#111827;}' +
-    '.wat-lang{padding:16px;font-size:13px;color:#374151;}' +
-    '.wat-lang select{width:100%;padding:8px;margin-top:8px;border-radius:8px;border:1px solid #d1d5db;font-size:13px;}' +
-    '.wat-lang button{margin-top:12px;width:100%;padding:9px;border:none;border-radius:8px;background:' + ACCENT + ';color:#fff;font-weight:600;cursor:pointer;}' +
     '.wat-footer{border-top:1px solid #e5e7eb;padding:10px;display:flex;gap:8px;background:#fff;}' +
     '.wat-footer input{flex:1;border:1px solid #d1d5db;border-radius:20px;padding:8px 14px;font-size:13px;outline:none;}' +
     '.wat-footer button{background:' + ACCENT + ';color:#fff;border:none;border-radius:20px;padding:0 16px;font-weight:600;cursor:pointer;}' +
@@ -79,15 +78,10 @@
   panel.className = 'wat-panel';
   panel.innerHTML =
     '<div class="wat-header"><span>' + TITLE + '</span>' +
-      '<span>' +
-        '<button class="wat-lang-change" aria-label="Change language" title="Change language">🌐</button>' +
+      '<span style="display:flex;align-items:center;">' +
+        '<select class="wat-lang-select" title="Change language" aria-label="Change language"></select>' +
         '<button class="wat-close" aria-label="Close">✕</button>' +
       '</span>' +
-    '</div>' +
-    '<div class="wat-lang" style="display:none">' +
-      'Pick your language to start chatting:' +
-      '<select class="wat-lang-select"></select>' +
-      '<button class="wat-lang-go">Start chat</button>' +
     '</div>' +
     '<div class="wat-body" style="display:none"></div>' +
     '<div class="wat-wa-row" style="display:none">' +
@@ -106,9 +100,7 @@
   document.body.appendChild(bubble);
   document.body.appendChild(panel);
 
-  var langBox = panel.querySelector('.wat-lang');
   var langSelect = panel.querySelector('.wat-lang-select');
-  var langGo = panel.querySelector('.wat-lang-go');
   var body = panel.querySelector('.wat-body');
   var footer = panel.querySelector('.wat-footer');
   var input = panel.querySelector('.wat-input');
@@ -125,9 +117,13 @@
     opt.textContent = pair[1];
     langSelect.appendChild(opt);
   });
+  // Preselect whatever's already known (explicit prior choice, or whatever
+  // the backend auto-detected on an earlier message) rather than defaulting
+  // to English, so the dropdown always reflects the conversation's actual
+  // current language.
+  langSelect.value = visitorLanguage || localStorage.getItem('wat_visitor_language') || 'en';
 
   function showChatUI() {
-    langBox.style.display = 'none';
     body.style.display = 'flex';
     footer.style.display = 'flex';
     waRow.style.display = 'flex';
@@ -136,30 +132,15 @@
 
   // No more forcing a language pick before chatting starts - the backend
   // auto-detects the visitor's language from their first message and locks
-  // it in for the rest of the conversation. The picker only reappears if
-  // they explicitly tap "change language" below.
+  // it in for the rest of the conversation. The always-visible dropdown in
+  // the header lets them correct it at any point instead.
   showChatUI();
 
-  langGo.addEventListener('click', function () {
+  // Every message from here on uses the newly selected language, both for
+  // what they send and for how the agent's replies are translated back.
+  langSelect.addEventListener('change', function () {
     visitorLanguage = langSelect.value;
     localStorage.setItem('wat_visitor_language', visitorLanguage);
-    showChatUI();
-  });
-
-  // Lets a visitor correct their language at any point instead of being
-  // stuck with whatever they (or a stale browser session) picked first -
-  // every message from here on uses the newly selected language, both
-  // for what they send and for how the agent's replies are translated back.
-  panel.querySelector('.wat-lang-change').addEventListener('click', function () {
-    // Preselect whatever they're currently using (explicit override, or
-    // whatever the backend auto-detected, echoed back on the last send)
-    // rather than defaulting the dropdown back to English.
-    var current = visitorLanguage || localStorage.getItem('wat_visitor_language');
-    if (current) langSelect.value = current;
-    body.style.display = 'none';
-    footer.style.display = 'none';
-    waRow.style.display = 'none';
-    langBox.style.display = 'block';
   });
 
   bubble.addEventListener('click', function () {
@@ -205,12 +186,14 @@
     })
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        // Keep local state in sync with whatever the backend locked in
-        // (auto-detected on message 1, or whatever we explicitly sent) so
-        // the "change language" picker preselects the right one later.
+        // Keep local state (and the header dropdown) in sync with whatever
+        // the backend locked in - auto-detected on message 1, or whatever
+        // was explicitly picked - so the dropdown always shows the
+        // conversation's actual current language.
         if (data.detectedLanguage) {
           visitorLanguage = data.detectedLanguage;
           localStorage.setItem('wat_visitor_language', visitorLanguage);
+          langSelect.value = visitorLanguage;
         }
         loadMessages();
       })
