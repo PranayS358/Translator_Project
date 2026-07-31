@@ -212,6 +212,7 @@ async function loadConversations() {
               <button data-conv-action="read" data-id="${c.id}">Mark all as read</button>
               <button data-conv-action="unread" data-id="${c.id}">Mark as unread</button>
               <button data-conv-action="favourite" data-id="${c.id}">${c.favourite ? 'Remove favourite' : 'Favourite'}</button>
+              <button data-conv-action="merge" data-id="${c.id}">Merge into another chat…</button>
               <button data-conv-action="delete" data-id="${c.id}" class="danger">Delete chat</button>
             </div>
           </div>
@@ -274,6 +275,32 @@ async function loadConversations() {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ favourite: !conv.favourite }),
         });
+      } else if (action === 'merge') {
+        // Lets an agent fix a split conversation themselves (e.g. a
+        // customer's webchat<->WhatsApp link got lost and their next
+        // WhatsApp message landed in a brand new thread instead of the
+        // existing one) without needing a developer to touch the database.
+        const others = conversationsCache.filter((c) => c.id !== id);
+        if (!others.length) { alert('There are no other conversations to merge into.'); return; }
+        const list = others
+          .map((c, i) => `${i + 1}. ${c.displayName || c.contactKey} (${c.channel})`)
+          .join('\n');
+        const choice = prompt(
+          `Merge "${conv.displayName || conv.contactKey}" into which conversation?\n` +
+          `This chat's messages will move into the one you pick, and this chat will be deleted.\n\n${list}\n\nEnter a number:`
+        );
+        const idx = Number(choice) - 1;
+        if (!choice || Number.isNaN(idx) || !others[idx]) return;
+        const target = others[idx];
+        if (!confirm(`Move all messages from "${conv.displayName || conv.contactKey}" into "${target.displayName || target.contactKey}" and delete this chat?`)) return;
+        await fetchJSON(`/api/conversations/${id}/merge`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ targetId: target.id }),
+        });
+        if (activeConversationId === id) {
+          activeConversationId = target.id;
+          await openConversation(target.id);
+        }
       } else if (action === 'delete') {
         if (!confirm('Delete this chat? It will be removed from your list entirely.')) return;
         await fetchJSON(`/api/conversations/${id}`, { method: 'DELETE' });

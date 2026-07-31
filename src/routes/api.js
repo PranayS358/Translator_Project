@@ -146,6 +146,40 @@ router.delete('/conversations/:id', async (req, res) => {
   }
 });
 
+// Merge two conversations that turned out to be the same person split
+// across two threads (e.g. a webchat visitor's "Continue on WhatsApp" link
+// got lost and their next WhatsApp message created a brand new conversation
+// instead of joining the existing one). Moves every message from the
+// source conversation into the target, transfers the WhatsApp link if the
+// target doesn't already have one, keeps the higher unread count, then
+// deletes the now-empty source. Whichever conversation you call this on
+// (:id) is the one that disappears; `targetId` is the one that survives.
+router.post('/conversations/:id/merge', async (req, res) => {
+  const sourceId = req.params.id;
+  const { targetId } = req.body;
+  if (!targetId) return res.status(400).json({ error: 'targetId is required' });
+  if (targetId === sourceId) return res.status(400).json({ error: 'Cannot merge a conversation into itself' });
+
+  const [source, target] = await Promise.all([
+    prisma.conversation.findUnique({ where: { id: sourceId } }),
+    prisma.conversation.findUnique({ where: { id: targetId } }),
+  ]);
+  if (!source || !target) return res.status(404).json({ error: 'Conversation not found' });
+
+  await prisma.message.updateMany({
+    where: { conversationId: sourceId },
+    data: { conversationId: targetId },
+  });
+
+  const data = { unreadCount: Math.max(source.unreadCount, target.unreadCount) };
+  if (!target.linkedWhatsapp && source.linkedWhatsapp) data.linkedWhatsapp = source.linkedWhatsapp;
+
+  const merged = await prisma.conversation.update({ where: { id: targetId }, data });
+  await prisma.conversation.delete({ where: { id: sourceId } });
+
+  res.json({ merged: true, conversation: merged });
+});
+
 // Send an image/video/document/audio attachment. Expects a base64 data URL
 // from the browser's file picker, camera capture, or voice recorder.
 router.post('/conversations/:id/media', async (req, res) => {
