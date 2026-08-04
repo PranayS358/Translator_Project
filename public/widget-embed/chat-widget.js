@@ -157,7 +157,56 @@
     messages.forEach(function (m) {
       var div = document.createElement('div');
       div.className = 'wat-msg ' + (m.direction === 'inbound' ? 'me' : 'agent');
-      div.textContent = m.direction === 'inbound' ? m.originalText : (m.translatedText || m.originalText);
+      var text = m.direction === 'inbound' ? m.originalText : (m.translatedText || m.originalText);
+
+      if (m.messageType === 'image' && m.mediaUrl) {
+        var img = document.createElement('img');
+        img.src = m.mediaUrl;
+        img.style.cssText = 'max-width:100%;border-radius:8px;display:block;';
+        div.appendChild(img);
+        if (text && text !== '[image]') {
+          var caption = document.createElement('div');
+          caption.style.marginTop = '4px';
+          caption.textContent = text;
+          div.appendChild(caption);
+        }
+      } else if (m.messageType === 'video' && m.mediaUrl) {
+        var video = document.createElement('video');
+        video.src = m.mediaUrl;
+        video.controls = true;
+        video.style.cssText = 'max-width:100%;border-radius:8px;display:block;';
+        div.appendChild(video);
+      } else if (m.messageType === 'audio' && m.mediaUrl) {
+        var audio = document.createElement('audio');
+        audio.src = m.mediaUrl;
+        audio.controls = true;
+        audio.style.maxWidth = '100%';
+        div.appendChild(audio);
+      } else if (m.messageType === 'document' && m.mediaUrl) {
+        var docLink = document.createElement('a');
+        docLink.href = m.mediaUrl;
+        docLink.download = m.fileName || 'file';
+        docLink.textContent = '📄 ' + (m.fileName || 'Document');
+        docLink.style.cssText = 'color:inherit;text-decoration:underline;';
+        div.appendChild(docLink);
+      } else if (m.messageType === 'location') {
+        var coords = {};
+        try { coords = JSON.parse(m.extra || '{}'); } catch (e) {}
+        var mapLink = document.createElement('a');
+        mapLink.href = 'https://www.google.com/maps?q=' + coords.latitude + ',' + coords.longitude;
+        mapLink.target = '_blank';
+        mapLink.rel = 'noopener';
+        mapLink.textContent = '📍 Shared location';
+        mapLink.style.cssText = 'color:inherit;text-decoration:underline;';
+        div.appendChild(mapLink);
+      } else if (m.messageType === 'contact') {
+        var c = {};
+        try { c = JSON.parse(m.extra || '{}'); } catch (e) {}
+        div.textContent = '👤 ' + (c.name || '') + (c.phone ? ' — ' + c.phone : '');
+      } else {
+        div.textContent = text;
+      }
+
       body.appendChild(div);
     });
     body.scrollTop = body.scrollHeight;

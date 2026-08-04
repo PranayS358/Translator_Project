@@ -5,6 +5,56 @@ const { translateText, translateBetween } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
+const { downloadWhatsAppMedia } = require('../whatsapp');
+
+// Turns a raw WhatsApp webhook `message` object into the shape addMessage()
+// expects, downloading the actual file for media types (the webhook payload
+// only ever contains a media ID, never the bytes). Returns null for message
+// types this demo doesn't support yet (stickers, reactions, interactive
+// replies, ...) so the caller can skip them instead of crashing.
+async function extractIncoming(message) {
+  const type = message.type;
+
+  if (type === 'text') {
+    return { messageType: 'text', originalText: message.text?.body || '', mediaUrl: null, fileName: null, extra: null };
+  }
+
+  if (type === 'image' || type === 'video' || type === 'audio' || type === 'document') {
+    const field = message[type] || {};
+    const media = field.id ? await downloadWhatsAppMedia(field.id) : null;
+    return {
+      messageType: type,
+      originalText: field.caption || `[${type}]`,
+      mediaUrl: media?.dataUrl || null,
+      fileName: field.filename || null,
+      extra: null,
+    };
+  }
+
+  if (type === 'location') {
+    const loc = message.location || {};
+    return {
+      messageType: 'location',
+      originalText: '[location]',
+      mediaUrl: null,
+      fileName: null,
+      extra: JSON.stringify({ latitude: loc.latitude, longitude: loc.longitude }),
+    };
+  }
+
+  if (type === 'contacts') {
+    const c = message.contacts?.[0];
+    return {
+      messageType: 'contact',
+      originalText: '[contact]',
+      mediaUrl: null,
+      fileName: null,
+      extra: JSON.stringify({ name: c?.name?.formatted_name || '', phone: c?.phones?.[0]?.phone || '' }),
+    };
+  }
+
+  return null;
+}
 
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'demo_verify_token';
 
@@ -47,9 +97,9 @@ router.post('/', async (req, res) => {
       return; // delivery/read status update, not a new message
     }
 
-    const text = message.text?.body;
-    if (!text) {
-      console.log(`ℹ️  Received a non-text WhatsApp message (type: ${message.type}) - skipped.`);
+    const content = await extractIncoming(message);
+    if (!content) {
+      console.log(`ℹ️  Received an unsupported WhatsApp message (type: ${message.type}) - skipped.`);
       return;
     }
 
@@ -69,21 +119,39 @@ router.post('/', async (req, res) => {
       where: { linkedWhatsapp: contactKey },
     });
 
+    // Media without a caption (originalText is just a "[image]"-style
+    // placeholder) and location/contact shares have nothing meaningful to
+    // translate - skip the API call and store the placeholder as-is. A
+    // caption on an image/video/document, or plain text, still gets
+    // translated exactly like before.
+    const text = content.originalText;
+    const hasRealText = text && !/^\[[a-z]+\]$/.test(text);
+
     let conversation, translatedText, detectedLanguage;
 
     if (linkedConversation) {
       conversation = linkedConversation;
-      const lastInbound = await prisma.message.findFirst({
-        where: { conversationId: conversation.id, direction: 'inbound' },
-        orderBy: { createdAt: 'desc' },
-      });
-      const sourceLang = lastInbound?.detectedLanguage && lastInbound.detectedLanguage !== 'unknown'
-        ? lastInbound.detectedLanguage
-        : 'en';
-      ({ translatedText, detectedLanguage } = await translateBetween(text, sourceLang, primaryLanguage));
+      if (hasRealText) {
+        const lastInbound = await prisma.message.findFirst({
+          where: { conversationId: conversation.id, direction: 'inbound' },
+          orderBy: { createdAt: 'desc' },
+        });
+        const sourceLang = lastInbound?.detectedLanguage && lastInbound.detectedLanguage !== 'unknown'
+          ? lastInbound.detectedLanguage
+          : 'en';
+        ({ translatedText, detectedLanguage } = await translateBetween(text, sourceLang, primaryLanguage));
+      } else {
+        translatedText = text;
+        detectedLanguage = 'n/a';
+      }
     } else {
       conversation = await getOrCreateConversation('whatsapp', contactKey, displayName);
-      ({ translatedText, detectedLanguage } = await translateText(text, primaryLanguage));
+      if (hasRealText) {
+        ({ translatedText, detectedLanguage } = await translateText(text, primaryLanguage));
+      } else {
+        translatedText = text;
+        detectedLanguage = 'n/a';
+      }
     }
 
     await addMessage(conversation.id, {
@@ -92,6 +160,10 @@ router.post('/', async (req, res) => {
       detectedLanguage,
       translatedText,
       targetLanguage: primaryLanguage,
+      messageType: content.messageType,
+      mediaUrl: content.mediaUrl,
+      fileName: content.fileName,
+      extra: content.extra,
     });
 
     if (!conversation.muted) {
@@ -101,7 +173,7 @@ router.post('/', async (req, res) => {
       });
     }
 
-    console.log(`📩 [whatsapp${linkedConversation ? '→webchat' : ''}] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
+    console.log(`📩 [whatsapp${linkedConversation ? '→webchat' : ''}] [${content.messageType}] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
   } catch (err) {
     console.error('WhatsApp webhook processing error:', err.message);
   }

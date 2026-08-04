@@ -125,11 +125,46 @@ async function sendWhatsAppContact(to, name, phone) {
   }
 }
 
+// Downloads media a CUSTOMER sent us via WhatsApp (image/video/audio/
+// document) - the inverse of uploadWhatsAppMedia. Meta's webhook payload
+// only ever includes a media ID, never the file itself; getting the actual
+// bytes takes two authenticated calls: resolve the ID to a short-lived CDN
+// URL via GET /{media-id}, then fetch that URL with the same bearer token
+// (it 401s without it). Returns a data URL so inbound media can be stored
+// and rendered with the exact same code path the dashboard already uses
+// for outbound media (see the "image"/"video"/etc. cases in app.js's
+// renderBubbleContent and the widget's render()). Returns null on any
+// failure (missing credentials, expired CDN URL, network error, etc.) so
+// callers can fall back to a text-only placeholder instead of crashing.
+async function downloadWhatsAppMedia(mediaId) {
+  const token = process.env.WHATSAPP_TOKEN;
+  if (!token || !mediaId) return null;
+
+  try {
+    const meta = await axios.get(`https://graph.facebook.com/${GRAPH_VERSION}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const { url, mime_type: mimeType } = meta.data;
+    if (!url) return null;
+
+    const file = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+    });
+    const base64 = Buffer.from(file.data).toString('base64');
+    return { dataUrl: `data:${mimeType};base64,${base64}`, mimeType };
+  } catch (err) {
+    console.error('Error downloading WhatsApp media:', err.response?.data || err.message);
+    return null;
+  }
+}
+
 module.exports = {
   sendWhatsAppMessage,
   uploadWhatsAppMedia,
   sendWhatsAppMedia,
   sendWhatsAppLocation,
   sendWhatsAppContact,
+  downloadWhatsAppMedia,
   parseDataUrl,
 };
