@@ -7,6 +7,7 @@ const whatsappWebhook = require('./src/routes/webhook');
 const metaWebhook = require('./src/routes/meta-webhook');
 const apiRouter = require('./src/routes/api');
 const widgetApiRouter = require('./src/routes/widget');
+const mediaRouter = require('./src/routes/media');
 const { requireApiKey, apiRateLimiter } = require('./src/security');
 
 const app = express();
@@ -53,6 +54,11 @@ app.use('/api', apiRateLimiter, requireApiKey, apiRouter);
 // Public embeddable chat widget API (no API key - see src/routes/widget.js
 // for why). Rate-limited the same as everything else to curb abuse.
 app.use('/widget-api', apiRateLimiter, widgetApiRouter);
+
+// Serves actual media bytes by message id (see src/routes/media.js for why
+// this exists as its own lightweight, heavily-cached, unauthenticated
+// route instead of embedding base64 in every polled JSON response).
+app.use('/media', apiRateLimiter, mediaRouter);
 
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));

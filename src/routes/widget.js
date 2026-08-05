@@ -10,7 +10,7 @@ const router = express.Router();
 const prisma = require('../db');
 const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
-const { getOrCreateConversation, addMessage } = require('../conversations');
+const { getOrCreateConversation, addMessage, toPublicMessages } = require('../conversations');
 const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
@@ -114,7 +114,9 @@ router.get('/messages', asyncHandler(async (req, res) => {
     where: { conversationId: conversation.id },
     orderBy: { createdAt: 'asc' },
   });
-  res.json({ messages });
+  // Polled every 4s by the widget - see toPublicMessage in conversations.js
+  // for why this can't ship raw base64 media on every poll.
+  res.json({ messages: toPublicMessages(messages) });
 }));
 
 // "Continue on WhatsApp": the visitor types their own WhatsApp number into

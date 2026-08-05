@@ -11,7 +11,7 @@ const {
 } = require('../whatsapp');
 const { sendMessengerMessage, sendInstagramMessage } = require('../meta-channels');
 const { normalizePhone } = require('../phone');
-const { getOrCreateConversation, addMessage } = require('../conversations');
+const { getOrCreateConversation, addMessage, toPublicMessage, toPublicMessages } = require('../conversations');
 const { gregorianToHijri, hijriToGregorian, today } = require('../hijri');
 const asyncHandler = require('../asyncHandler');
 
@@ -31,7 +31,10 @@ router.get('/conversations', asyncHandler(async (req, res) => {
     include: { messages: { orderBy: { createdAt: 'desc' }, take: 1 } },
     orderBy: { createdAt: 'desc' },
   });
-  res.json(conversations);
+  // This list is polled every 5s regardless of which conversation (if any)
+  // is open - the last-message preview only ever shows text, so there's no
+  // reason to ship a full base64 media blob here every poll cycle.
+  res.json(conversations.map((c) => ({ ...c, messages: toPublicMessages(c.messages) })));
 }));
 
 // Full message thread (both inbound and outbound, in order) for one
@@ -41,7 +44,7 @@ router.get('/conversations/:id/messages', asyncHandler(async (req, res) => {
     where: { conversationId: req.params.id },
     orderBy: { createdAt: 'asc' },
   });
-  res.json(messages);
+  res.json(toPublicMessages(messages));
 }));
 
 // Manually send a reply from the dashboard itself. Translates the agent's
@@ -231,7 +234,7 @@ router.post('/conversations/:id/media', asyncHandler(async (req, res) => {
     fileName: fileName || null,
   });
 
-  res.json({ message: saved, sent: !!sendResult });
+  res.json({ message: toPublicMessage(saved), sent: !!sendResult });
 }));
 
 // Send a location pin.
