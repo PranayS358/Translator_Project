@@ -207,6 +207,7 @@ async function loadConversations() {
           <div class="conv-menu-wrap">
             <button class="conv-menu-btn" data-menu-id="${c.id}" title="Chat options">⋮</button>
             <div class="dropdown-menu hidden" data-menu-for="${c.id}">
+              <button data-conv-action="rename" data-id="${c.id}">Rename chat…</button>
               <button data-conv-action="clear" data-id="${c.id}">Clear chat</button>
               <button data-conv-action="mute" data-id="${c.id}">${c.muted ? 'Unmute chat' : 'Mute chat'}</button>
               <button data-conv-action="read" data-id="${c.id}">Mark all as read</button>
@@ -251,7 +252,19 @@ async function loadConversations() {
       const conv = conversationsCache.find((c) => c.id === id);
       closeAllDropdowns();
 
-      if (action === 'clear') {
+      if (action === 'rename') {
+        const current = conv.displayName || '';
+        const name = prompt('Rename this chat (e.g. the patient\'s name):', current);
+        if (name === null) return; // cancelled
+        await fetchJSON(`/api/conversations/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ displayName: name.trim() }),
+        });
+        if (activeConversationId === id) {
+          const updatedConv = { ...conv, displayName: name.trim() || null };
+          el('thread-header').textContent = `${updatedConv.displayName || updatedConv.contactKey} · ${updatedConv.channel}`;
+        }
+      } else if (action === 'clear') {
         if (!confirm('Clear all messages in this chat? This cannot be undone.')) return;
         await fetchJSON(`/api/conversations/${id}/messages`, { method: 'DELETE' });
         if (activeConversationId === id) await loadThreadMessages();

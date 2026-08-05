@@ -4,6 +4,7 @@ const prisma = require('../db');
 const { translateText } = require('../translate');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
+const asyncHandler = require('../asyncHandler');
 
 const VERIFY_TOKEN = process.env.WEBHOOK_VERIFY_TOKEN || 'demo_verify_token';
 
@@ -20,7 +21,7 @@ router.get('/', (req, res) => {
   return res.sendStatus(403);
 });
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   res.sendStatus(200);
 
   if (process.env.META_APP_SECRET && !verifyMetaSignature(req)) {
@@ -71,6 +72,6 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('Messenger/Instagram webhook processing error:', err.message);
   }
-});
+}));
 
 module.exports = router;

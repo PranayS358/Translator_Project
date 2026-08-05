@@ -58,6 +58,35 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Catch-all error handler. Every async route handler is wrapped in
+// asyncHandler (see src/asyncHandler.js), which forwards rejected promises
+// here via next(err) instead of letting them crash the process. This is
+// what actually stops a transient failure (e.g. Neon's free-tier Postgres
+// waking up from suspend) from taking down the whole site for every visitor.
+app.use((err, req, res, next) => {
+  console.error('Unhandled request error:', err);
+  if (res.headersSent) return next(err);
+  const dbUnreachable = err?.name === 'PrismaClientInitializationError'
+    || /Can't reach database server/i.test(err?.message || '');
+  res.status(dbUnreachable ? 503 : 500).json({
+    error: dbUnreachable
+      ? 'Database is temporarily unreachable — please try again in a few seconds.'
+      : 'Something went wrong on the server.',
+  });
+});
+
+// Last-resort safety net. asyncHandler + the error middleware above should
+// catch everything that happens inside a request, but this guarantees that
+// even a bug we didn't anticipate logs and keeps the process alive instead
+// of exiting (which is what turned one flaky DB call into a full 502 outage
+// on 2026-08-05 — see the git history of src/asyncHandler.js).
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection (process kept alive):', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (process kept alive):', err);
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log('\n===========================================================');

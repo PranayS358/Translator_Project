@@ -13,6 +13,7 @@ const { sendMessengerMessage, sendInstagramMessage } = require('../meta-channels
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { gregorianToHijri, hijriToGregorian, today } = require('../hijri');
+const asyncHandler = require('../asyncHandler');
 
 function messageTypeFromMime(mimeType = '') {
   if (mimeType.startsWith('image/')) return 'image';
@@ -25,28 +26,28 @@ function messageTypeFromMime(mimeType = '') {
 
 // List all conversations with a preview of the last message - powers the
 // left-hand contact list in the UI.
-router.get('/conversations', async (req, res) => {
+router.get('/conversations', asyncHandler(async (req, res) => {
   const conversations = await prisma.conversation.findMany({
     include: { messages: { orderBy: { createdAt: 'desc' }, take: 1 } },
     orderBy: { createdAt: 'desc' },
   });
   res.json(conversations);
-});
+}));
 
 // Full message thread (both inbound and outbound, in order) for one
 // conversation - this is what makes sending/receiving live on one page.
-router.get('/conversations/:id/messages', async (req, res) => {
+router.get('/conversations/:id/messages', asyncHandler(async (req, res) => {
   const messages = await prisma.message.findMany({
     where: { conversationId: req.params.id },
     orderBy: { createdAt: 'asc' },
   });
   res.json(messages);
-});
+}));
 
 // Manually send a reply from the dashboard itself. Translates the agent's
 // text (assumed written in the primary language) into whatever language the
 // customer has been writing in, then sends it out on the right channel.
-router.post('/conversations/:id/reply', async (req, res) => {
+router.post('/conversations/:id/reply', asyncHandler(async (req, res) => {
   const { text } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text is required' });
 
@@ -105,16 +106,21 @@ router.post('/conversations/:id/reply', async (req, res) => {
   });
 
   res.json({ message: saved, sent: !!sendResult });
-});
+}));
 
 // Update conversation flags: favourite, muted, unreadCount (used for
 // mute/favourite toggles and mark-as-read / mark-as-unread).
-router.patch('/conversations/:id', async (req, res) => {
-  const { favourite, muted, unreadCount } = req.body;
+router.patch('/conversations/:id', asyncHandler(async (req, res) => {
+  const { favourite, muted, unreadCount, displayName } = req.body;
   const data = {};
   if (typeof favourite === 'boolean') data.favourite = favourite;
   if (typeof muted === 'boolean') data.muted = muted;
   if (typeof unreadCount === 'number') data.unreadCount = unreadCount;
+  if (typeof displayName === 'string') {
+    // Empty string clears the custom name, reverting the list to show the
+    // raw contactKey (e.g. the webchat visitor id) again.
+    data.displayName = displayName.trim() || null;
+  }
 
   try {
     const conversation = await prisma.conversation.update({
@@ -125,18 +131,18 @@ router.patch('/conversations/:id', async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: 'Conversation not found' });
   }
-});
+}));
 
 // Clear chat — deletes every message in the conversation but keeps the
 // conversation itself (so it stays in the sidebar, just empty).
-router.delete('/conversations/:id/messages', async (req, res) => {
+router.delete('/conversations/:id/messages', asyncHandler(async (req, res) => {
   await prisma.message.deleteMany({ where: { conversationId: req.params.id } });
   res.json({ cleared: true });
-});
+}));
 
 // Delete chat — removes the conversation (and its messages) from the list
 // entirely. Messages are deleted first since they reference the conversation.
-router.delete('/conversations/:id', async (req, res) => {
+router.delete('/conversations/:id', asyncHandler(async (req, res) => {
   await prisma.message.deleteMany({ where: { conversationId: req.params.id } });
   try {
     await prisma.conversation.delete({ where: { id: req.params.id } });
@@ -144,7 +150,7 @@ router.delete('/conversations/:id', async (req, res) => {
   } catch (err) {
     res.status(404).json({ error: 'Conversation not found' });
   }
-});
+}));
 
 // Merge two conversations that turned out to be the same person split
 // across two threads (e.g. a webchat visitor's "Continue on WhatsApp" link
@@ -154,7 +160,7 @@ router.delete('/conversations/:id', async (req, res) => {
 // target doesn't already have one, keeps the higher unread count, then
 // deletes the now-empty source. Whichever conversation you call this on
 // (:id) is the one that disappears; `targetId` is the one that survives.
-router.post('/conversations/:id/merge', async (req, res) => {
+router.post('/conversations/:id/merge', asyncHandler(async (req, res) => {
   const sourceId = req.params.id;
   const { targetId } = req.body;
   if (!targetId) return res.status(400).json({ error: 'targetId is required' });
@@ -178,11 +184,11 @@ router.post('/conversations/:id/merge', async (req, res) => {
   await prisma.conversation.delete({ where: { id: sourceId } });
 
   res.json({ merged: true, conversation: merged });
-});
+}));
 
 // Send an image/video/document/audio attachment. Expects a base64 data URL
 // from the browser's file picker, camera capture, or voice recorder.
-router.post('/conversations/:id/media', async (req, res) => {
+router.post('/conversations/:id/media', asyncHandler(async (req, res) => {
   const { dataUrl, fileName, caption } = req.body;
   if (!dataUrl) return res.status(400).json({ error: 'dataUrl is required' });
 
@@ -226,10 +232,10 @@ router.post('/conversations/:id/media', async (req, res) => {
   });
 
   res.json({ message: saved, sent: !!sendResult });
-});
+}));
 
 // Send a location pin.
-router.post('/conversations/:id/location', async (req, res) => {
+router.post('/conversations/:id/location', asyncHandler(async (req, res) => {
   const { latitude, longitude } = req.body;
   if (typeof latitude !== 'number' || typeof longitude !== 'number') {
     return res.status(400).json({ error: 'latitude and longitude (numbers) are required' });
@@ -255,10 +261,10 @@ router.post('/conversations/:id/location', async (req, res) => {
   });
 
   res.json({ message: saved, sent: !!sendResult });
-});
+}));
 
 // Send a contact card.
-router.post('/conversations/:id/contact', async (req, res) => {
+router.post('/conversations/:id/contact', asyncHandler(async (req, res) => {
   const { name, phone } = req.body;
   if (!name || !phone) return res.status(400).json({ error: 'name and phone are required' });
 
@@ -282,11 +288,11 @@ router.post('/conversations/:id/contact', async (req, res) => {
   });
 
   res.json({ message: saved, sent: !!sendResult });
-});
+}));
 
 // Simulate an inbound message on any channel, for testing without a real
 // WhatsApp/Messenger/Instagram account connected.
-router.post('/simulate-message', async (req, res) => {
+router.post('/simulate-message', asyncHandler(async (req, res) => {
   const { from, text, channel } = req.body;
   if (!text || !text.trim()) return res.status(400).json({ error: 'text is required' });
 
@@ -317,16 +323,16 @@ router.post('/simulate-message', async (req, res) => {
   }
 
   res.json(saved);
-});
+}));
 
 // ── Settings (primary language + theme) ─────────────────────────────────
 
-router.get('/settings', async (req, res) => {
+router.get('/settings', asyncHandler(async (req, res) => {
   const settings = await prisma.settings.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } });
   res.json(settings);
-});
+}));
 
-router.post('/settings', async (req, res) => {
+router.post('/settings', asyncHandler(async (req, res) => {
   const { primaryLanguage, theme } = req.body;
   const data = {};
   if (primaryLanguage) data.primaryLanguage = primaryLanguage;
@@ -338,7 +344,7 @@ router.post('/settings', async (req, res) => {
     create: { id: 1, ...data },
   });
   res.json(settings);
-});
+}));
 
 // ── Hijri / Gregorian calendar (unchanged) ──────────────────────────────
 

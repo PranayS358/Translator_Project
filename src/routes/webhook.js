@@ -6,6 +6,7 @@ const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
 const { downloadWhatsAppMedia } = require('../whatsapp');
+const asyncHandler = require('../asyncHandler');
 
 // Turns a raw WhatsApp webhook `message` object into the shape addMessage()
 // expects, downloading the actual file for media types (the webhook payload
@@ -71,7 +72,7 @@ router.get('/', (req, res) => {
   return res.sendStatus(403);
 });
 
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   res.sendStatus(200); // ack immediately, Meta requires this
 
   if (process.env.META_APP_SECRET && !verifyMetaSignature(req)) {
@@ -177,6 +178,6 @@ router.post('/', async (req, res) => {
   } catch (err) {
     console.error('WhatsApp webhook processing error:', err.message);
   }
-});
+}));
 
 module.exports = router;

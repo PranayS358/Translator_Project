@@ -11,6 +11,7 @@ const prisma = require('../db');
 const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
+const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
@@ -43,7 +44,7 @@ async function getPrimaryLanguage() {
 //      auto-detect (via detectAndTranslate in src/translate.js) since that's
 //      what actually recognizes Hinglish and other script-ambiguous text;
 //      falls back to franc when Google isn't configured.
-router.post('/message', async (req, res) => {
+router.post('/message', asyncHandler(async (req, res) => {
   const { visitorId, text, language } = req.body;
   if (!visitorId || !text || !text.trim()) {
     return res.status(400).json({ error: 'visitorId and text are required' });
@@ -95,12 +96,12 @@ router.post('/message', async (req, res) => {
   }
 
   res.json({ message: saved, detectedLanguage: customerLanguage });
-});
+}));
 
 // The widget polls this to render the full thread, including the agent's
 // replies (translated back into the visitor's own language when they were
 // sent from the dashboard).
-router.get('/messages', async (req, res) => {
+router.get('/messages', asyncHandler(async (req, res) => {
   const { visitorId } = req.query;
   if (!visitorId) return res.status(400).json({ error: 'visitorId is required' });
 
@@ -114,7 +115,7 @@ router.get('/messages', async (req, res) => {
     orderBy: { createdAt: 'asc' },
   });
   res.json({ messages });
-});
+}));
 
 // "Continue on WhatsApp": the visitor types their own WhatsApp number into
 // the widget. We link it to their existing webchat conversation right away,
@@ -122,7 +123,7 @@ router.get('/messages', async (req, res) => {
 // the number and merges it into this SAME conversation instead of starting
 // a new one. Returns the business's WhatsApp number so the widget can build
 // a wa.me deep link.
-router.post('/link-whatsapp', async (req, res) => {
+router.post('/link-whatsapp', asyncHandler(async (req, res) => {
   const { visitorId, phone } = req.body;
   if (!visitorId || !phone) return res.status(400).json({ error: 'visitorId and phone are required' });
 
@@ -147,6 +148,6 @@ router.post('/link-whatsapp', async (req, res) => {
   });
 
   res.json({ linked: true, businessNumber, waLink: `https://wa.me/${businessNumber}` });
-});
+}));
 
 module.exports = router;
