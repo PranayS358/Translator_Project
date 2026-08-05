@@ -150,6 +150,19 @@
     panel.classList.remove('open');
   });
 
+  // The dashboard and this widget both receive mediaUrl as a lightweight
+  // `/media/:id` reference (see toPublicMessage in src/conversations.js) -
+  // a relative path deliberately, since the dashboard is served from the
+  // SAME origin as that route. This widget isn't: it's embedded on a
+  // client's own site (e.g. the healthcare demo), so a bare "/media/..."
+  // resolves against THAT site's origin instead of the translator API's,
+  // producing a broken image. Resolve it against API_BASE explicitly.
+  function resolveMediaUrl(url) {
+    if (!url) return url;
+    if (/^https?:\/\//i.test(url) || url.indexOf('data:') === 0) return url;
+    return API_BASE.replace(/\/$/, '') + url;
+  }
+
   var renderedCount = 0;
   function render(messages) {
     if (messages.length === renderedCount) return;
@@ -158,10 +171,11 @@
       var div = document.createElement('div');
       div.className = 'wat-msg ' + (m.direction === 'inbound' ? 'me' : 'agent');
       var text = m.direction === 'inbound' ? m.originalText : (m.translatedText || m.originalText);
+      var mediaUrl = resolveMediaUrl(m.mediaUrl);
 
-      if (m.messageType === 'image' && m.mediaUrl) {
+      if (m.messageType === 'image' && mediaUrl) {
         var img = document.createElement('img');
-        img.src = m.mediaUrl;
+        img.src = mediaUrl;
         img.style.cssText = 'max-width:100%;border-radius:8px;display:block;';
         div.appendChild(img);
         if (text && text !== '[image]') {
@@ -170,21 +184,21 @@
           caption.textContent = text;
           div.appendChild(caption);
         }
-      } else if (m.messageType === 'video' && m.mediaUrl) {
+      } else if (m.messageType === 'video' && mediaUrl) {
         var video = document.createElement('video');
-        video.src = m.mediaUrl;
+        video.src = mediaUrl;
         video.controls = true;
         video.style.cssText = 'max-width:100%;border-radius:8px;display:block;';
         div.appendChild(video);
-      } else if (m.messageType === 'audio' && m.mediaUrl) {
+      } else if (m.messageType === 'audio' && mediaUrl) {
         var audio = document.createElement('audio');
-        audio.src = m.mediaUrl;
+        audio.src = mediaUrl;
         audio.controls = true;
         audio.style.maxWidth = '100%';
         div.appendChild(audio);
-      } else if (m.messageType === 'document' && m.mediaUrl) {
+      } else if (m.messageType === 'document' && mediaUrl) {
         var docLink = document.createElement('a');
-        docLink.href = m.mediaUrl;
+        docLink.href = mediaUrl;
         docLink.download = m.fileName || 'file';
         docLink.textContent = '📄 ' + (m.fileName || 'Document');
         docLink.style.cssText = 'color:inherit;text-decoration:underline;';
