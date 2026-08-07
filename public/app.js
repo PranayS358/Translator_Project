@@ -185,20 +185,24 @@ async function loadConversations() {
     return;
   }
 
-  // Favourites first, then most recent.
-  const sorted = [...conversationsCache].sort((a, b) => (b.favourite - a.favourite));
+  // Urgent (active ambulance/emergency, flagged by the Groq bot - see
+  // src/groq.js's [[URGENT]] marker) always floats to the top regardless of
+  // favourite status, then favourites, then most recent.
+  const sorted = [...conversationsCache].sort((a, b) => (b.urgent - a.urgent) || (b.favourite - a.favourite));
 
   container.innerHTML = sorted.map((c) => {
     const last = c.messages?.[0];
     const preview = last ? escapeHTML(last.translatedText || last.originalText) : '';
     const active = c.id === activeConversationId ? 'active' : '';
+    const urgentClass = c.urgent ? 'urgent' : '';
     const icons = [
+      c.urgent ? '🚨' : '',
       c.favourite ? '⭐' : '',
       c.muted ? '🔇' : '',
     ].filter(Boolean).join(' ');
 
     return `
-      <div class="conversation-item ${active}" data-id="${c.id}">
+      <div class="conversation-item ${active} ${urgentClass}" data-id="${c.id}">
         <div class="conv-top">
           <div class="conv-top-left">
             <span class="conv-name">${escapeHTML(c.displayName || c.contactKey)}</span>
@@ -213,6 +217,7 @@ async function loadConversations() {
               <button data-conv-action="read" data-id="${c.id}">Mark all as read</button>
               <button data-conv-action="unread" data-id="${c.id}">Mark as unread</button>
               <button data-conv-action="favourite" data-id="${c.id}">${c.favourite ? 'Remove favourite' : 'Favourite'}</button>
+              ${c.urgent ? `<button data-conv-action="clear-urgent" data-id="${c.id}">Clear emergency flag</button>` : ''}
               <button data-conv-action="merge" data-id="${c.id}">Merge into another chat…</button>
               <button data-conv-action="delete" data-id="${c.id}" class="danger">Delete chat</button>
             </div>
@@ -287,6 +292,14 @@ async function loadConversations() {
         await fetchJSON(`/api/conversations/${id}`, {
           method: 'PATCH', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ favourite: !conv.favourite }),
+        });
+      } else if (action === 'clear-urgent') {
+        // The bot sets this the moment it detects an active ambulance/
+        // emergency request (src/groq.js) - clear it once staff have
+        // actually dispatched help / handled the situation.
+        await fetchJSON(`/api/conversations/${id}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ urgent: false }),
         });
       } else if (action === 'merge') {
         // Lets an agent fix a split conversation themselves (e.g. a

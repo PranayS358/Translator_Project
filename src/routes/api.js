@@ -120,14 +120,16 @@ router.post('/conversations/:id/reply', asyncHandler(async (req, res) => {
 
 // Update conversation flags: favourite, muted, unreadCount (used for
 // mute/favourite toggles and mark-as-read / mark-as-unread). Also used to
-// flip botEnabled back on after a human has taken over a conversation.
+// flip botEnabled back on after a human has taken over a conversation, and
+// to clear the urgent (ambulance/emergency) flag once staff have handled it.
 router.patch('/conversations/:id', asyncHandler(async (req, res) => {
-  const { favourite, muted, unreadCount, displayName, botEnabled } = req.body;
+  const { favourite, muted, unreadCount, displayName, botEnabled, urgent } = req.body;
   const data = {};
   if (typeof favourite === 'boolean') data.favourite = favourite;
   if (typeof muted === 'boolean') data.muted = muted;
   if (typeof unreadCount === 'number') data.unreadCount = unreadCount;
   if (typeof botEnabled === 'boolean') data.botEnabled = botEnabled;
+  if (typeof urgent === 'boolean') data.urgent = urgent;
   if (typeof displayName === 'string') {
     // Empty string clears the custom name, reverting the list to show the
     // raw contactKey (e.g. the webchat visitor id) again.

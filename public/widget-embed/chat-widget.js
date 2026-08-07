@@ -60,6 +60,9 @@
     '.wat-footer{border-top:1px solid #e5e7eb;padding:10px;display:flex;gap:8px;background:#fff;}' +
     '.wat-footer input{flex:1;border:1px solid #d1d5db;border-radius:20px;padding:8px 14px;font-size:13px;outline:none;}' +
     '.wat-footer button{background:' + ACCENT + ';color:#fff;border:none;border-radius:20px;padding:0 16px;font-weight:600;cursor:pointer;}' +
+    '.wat-loc-btn{background:none!important;color:' + ACCENT + '!important;border:1px solid #d1d5db!important;' +
+    'border-radius:50%!important;width:34px;height:34px;padding:0!important;flex-shrink:0;font-size:16px;' +
+    'display:flex;align-items:center;justify-content:center;}' +
     '.wat-wa-row{padding:6px 12px;background:#ecfdf5;border-top:1px solid #d1fae5;font-size:11px;color:#065f46;display:flex;gap:6px;align-items:center;justify-content:space-between;}' +
     '.wat-wa-row a, .wat-wa-row button{font-size:11px;color:' + ACCENT + ';background:none;border:none;cursor:pointer;font-weight:600;text-decoration:underline;padding:0;}' +
     '.wat-wa-form{padding:8px 12px;background:#ecfdf5;display:none;gap:6px;}' +
@@ -93,6 +96,7 @@
       '<button class="wat-wa-send">Link</button>' +
     '</div>' +
     '<div class="wat-footer" style="display:none">' +
+      '<button class="wat-loc-btn" type="button" title="Share my current location" aria-label="Share my current location">📍</button>' +
       '<input class="wat-input" placeholder="Type a message…" />' +
       '<button class="wat-send">Send</button>' +
     '</div>';
@@ -105,6 +109,7 @@
   var footer = panel.querySelector('.wat-footer');
   var input = panel.querySelector('.wat-input');
   var sendBtn = panel.querySelector('.wat-send');
+  var locBtn = panel.querySelector('.wat-loc-btn');
   var waRow = panel.querySelector('.wat-wa-row');
   var waToggle = panel.querySelector('.wat-wa-toggle');
   var waForm = panel.querySelector('.wat-wa-form');
@@ -266,6 +271,41 @@
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') send();
+  });
+
+  // Lets a patient share their live GPS position instead of typing an
+  // address — mainly useful mid-way through the bot's ambulance/emergency
+  // flow (src/groq.js), which explicitly points them at this button, but
+  // works any time (e.g. "which branch is closest to me").
+  locBtn.addEventListener('click', function () {
+    if (!navigator.geolocation) {
+      alert('Location sharing isn\'t supported by this browser.');
+      return;
+    }
+    locBtn.disabled = true;
+    locBtn.textContent = '…';
+    navigator.geolocation.getCurrentPosition(
+      function (pos) {
+        fetch(API_BASE + '/widget-api/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            visitorId: visitorId,
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+          }),
+        })
+          .then(function () { loadMessages(); })
+          .catch(function () {})
+          .finally(function () { locBtn.disabled = false; locBtn.textContent = '📍'; });
+      },
+      function () {
+        alert('Couldn\'t get your location — please check your browser\'s location permission, or just type your address instead.');
+        locBtn.disabled = false;
+        locBtn.textContent = '📍';
+      },
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
   });
 
   waToggle.addEventListener('click', function () {

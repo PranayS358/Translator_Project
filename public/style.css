@@ -127,6 +127,12 @@ select, input[type="text"], input[type="date"] {
 }
 .conversation-item:hover { background: var(--accent-soft); }
 .conversation-item.active { background: var(--accent-soft); border-left: 3px solid var(--accent); }
+/* Set by the Groq bot the moment it detects an active ambulance/emergency
+   request (src/groq.js's [[URGENT]] marker) - stays until an agent clears
+   it via the chat's "Clear emergency flag" menu action. */
+.conversation-item.urgent { background: #fef2f2; border-left: 3px solid #dc2626; }
+.conversation-item.urgent:hover { background: #fee2e2; }
+.conversation-item.urgent.active { background: #fee2e2; border-left: 3px solid #dc2626; }
 .conv-top { display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 600; gap: 6px; }
 .conv-top-left { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .conv-top-left span.conv-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -38,6 +38,11 @@ model Conversation {
   // in for the rest of the conversation so every message - both directions -
   // consistently uses the same language instead of re-detecting each time.
   customerLanguage String?
+  // Set by the Groq bot (src/groq.js) the moment it detects an active
+  // ambulance/emergency request, so agents can spot it immediately in the
+  // dashboard sidebar instead of relying on the regular unread badge. Stays
+  // true until an agent clears it via PATCH /api/conversations/:id.
+  urgent         Boolean   @default(false)
   createdAt      DateTime  @default(now())
   messages       Message[]
 

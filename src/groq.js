@@ -15,6 +15,10 @@ const axios = require('axios');
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-20b';
+// Told to patients as a backup during the ambulance flow below — a chatbot
+// reply has real latency (LLM call + poll cycle), so it should never be the
+// only channel for an actual emergency. Override for clinics outside India.
+const EMERGENCY_NUMBER = process.env.EMERGENCY_NUMBER || '108';
 
 const DEFAULT_CLINIC_INFO = `Wellness Care Clinic is a general healthcare practice.
 Hours: Monday-Saturday 9am-7pm, closed Sundays.
@@ -107,6 +111,13 @@ Appointment booking flow — when a patient wants to book an appointment, follow
 4. Only after a doctor is chosen (by name, or by accepting your recommendation), offer 2-3 slot options for that department from "Upcoming available slots" above.
 5. Once they pick a slot, do NOT say the appointment is booked or confirmed. Say you've noted their request (doctor, department, day/time) and that the front desk will confirm it shortly — matching the booking rule below.
 
+Ambulance / emergency flow — if a patient says they need an ambulance or describes what sounds like a medical emergency (severe injury, can't breathe, unconscious, serious accident, chest pain with distress, etc.), this OVERRIDES the "escalate for medical concerns" rule below — handle it directly yourself, one step per message, don't skip ahead:
+1. In one short sentence, acknowledge the urgency and ask for their exact location — their address, or tell them they can tap the widget's "Share my location" button instead of typing it.
+2. Once they give a location (a typed address, or a message noting they shared their location), acknowledge you have it, then ask ONE short follow-up so the ambulance crew can prepare: is this an accident/injury, an elderly/age-related issue, a known existing disease/condition, or something else.
+3. Once they answer (or say they don't know), tell them the clinic's team has been alerted with their location and details and an ambulance is being arranged right now — AND, every time, tell them to also call ${EMERGENCY_NUMBER} immediately if they haven't already, since that's the fastest direct emergency line and this chat cannot guarantee response time.
+4. On every reply that's part of an active emergency/ambulance exchange (steps 1-3), end your message on its own new line with exactly this marker: [[URGENT]] — it's invisible to the patient (stripped before sending) and only used to alert clinic staff. Never include it for a non-emergency reply.
+This flow is about routing help fast, not diagnosing — still never guess what's medically wrong with them or what they should do about symptoms beyond these three steps.
+
 Rules:
 - Keep answers short (2-4 sentences), warm, and clear.
 - Never give medical advice, diagnoses, medication guidance, or interpret symptoms.
@@ -125,11 +136,18 @@ Rules:
  * conversation is on) — there's no separate flow-state tracking in code.
  *
  * Returns:
- *   null                       - not configured, or the call failed; caller
- *                                 should leave the message for a human, same
- *                                 as if auto-reply didn't exist.
- *   { escalate: true }         - Groq decided a human should handle this.
- *   { escalate: false, reply } - safe to send `reply` straight to the patient.
+ *   null                                  - not configured, or the call
+ *                                            failed; caller should leave the
+ *                                            message for a human, same as if
+ *                                            auto-reply didn't exist.
+ *   { escalate: true }                    - Groq decided a human should
+ *                                            handle this.
+ *   { escalate: false, reply, urgent }    - safe to send `reply` straight to
+ *                                            the patient. `urgent` is true
+ *                                            when this is part of an active
+ *                                            ambulance/emergency exchange -
+ *                                            the caller should flag the
+ *                                            conversation for staff.
  */
 async function getAutoReply(history) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -144,14 +162,21 @@ async function getAutoReply(history) {
       { model: MODEL, messages, temperature: 0.3, max_tokens: 300 },
       { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 15000 }
     );
-    const reply = res.data?.choices?.[0]?.message?.content?.trim();
+    let reply = res.data?.choices?.[0]?.message?.content?.trim();
     if (!reply) return null;
     if (reply === 'ESCALATE' || reply.startsWith('ESCALATE')) return { escalate: true };
-    return { escalate: false, reply };
+
+    // Strip the hidden [[URGENT]] marker (see the ambulance flow in
+    // systemPrompt()) before it ever reaches the patient - it's purely a
+    // signal for the caller (widget.js) to flag the conversation for staff.
+    const urgent = /\[\[URGENT\]\]/.test(reply);
+    if (urgent) reply = reply.replace(/\[\[URGENT\]\]/g, '').trim();
+
+    return { escalate: false, reply, urgent };
   } catch (err) {
     console.error('Groq auto-reply error:', err.response?.data || err.message);
     return null;
   }
 }
 
-module.exports = { getAutoReply, DEFAULT_CLINIC_INFO, DEFAULT_DOCTOR_ROSTER };
+module.exports = { getAutoReply, DEFAULT_CLINIC_INFO, DEFAULT_DOCTOR_ROSTER, EMERGENCY_NUMBER };

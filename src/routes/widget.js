@@ -27,6 +27,63 @@ async function getPrimaryLanguage() {
   return settings.primaryLanguage;
 }
 
+// Turns a stored message into one line of context for the bot. Plain
+// placeholders like "[image]" carry no useful text, but a shared location
+// is exactly the thing the ambulance flow (src/groq.js) needs to see and
+// react to - so unlike other placeholders, describe it with an actual
+// coordinate/maps link instead of dropping it from history entirely.
+function describeForBot(message) {
+  if (message.messageType === 'location') {
+    let coords = {};
+    try { coords = JSON.parse(message.extra || '{}'); } catch (err) { /* ignore */ }
+    if (coords.latitude != null && coords.longitude != null) {
+      return `[Patient shared their location: https://www.google.com/maps?q=${coords.latitude},${coords.longitude}]`;
+    }
+  }
+  const text = message.direction === 'inbound' ? (message.translatedText || message.originalText) : message.originalText;
+  if (text && /^\[[a-z]+\]$/i.test(text)) return null; // other placeholders (e.g. "[image]") - nothing useful to hand the bot
+  return text;
+}
+
+// Shared by POST /message and POST /location - runs the Groq auto-reply
+// (src/groq.js) against a conversation's recent history and, if it produces
+// a reply, translates and saves it. Also flips conversation.urgent on when
+// the bot signals an active ambulance/emergency exchange (see the
+// [[URGENT]] marker in groq.js's systemPrompt), so agents can spot it in
+// the dashboard sidebar without relying on the regular unread badge alone.
+async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
+  if (conversation.muted || !conversation.botEnabled) return;
+  try {
+    const recent = await prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    });
+    const history = recent
+      .reverse()
+      .map((m) => ({ role: m.direction === 'inbound' ? 'user' : 'assistant', content: describeForBot(m) }))
+      .filter((m) => m.content);
+
+    const auto = await getAutoReply(history);
+    if (!auto || auto.escalate || !auto.reply) return;
+
+    const { translatedText: botReplyTranslated } = await translateBetween(auto.reply, primaryLanguage, customerLanguage);
+    await addMessage(conversation.id, {
+      direction: 'outbound',
+      originalText: auto.reply,
+      detectedLanguage: 'bot',
+      translatedText: botReplyTranslated,
+      targetLanguage: customerLanguage,
+    });
+
+    if (auto.urgent) {
+      await prisma.conversation.update({ where: { id: conversation.id }, data: { urgent: true } });
+    }
+  } catch (err) {
+    console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
+  }
+}
+
 // A visitor sends a message from the widget. Figures out (or reuses) the
 // conversation's locked-in language, creates the webchat conversation on
 // first contact, translates into the site's configured primary language,
@@ -96,47 +153,49 @@ router.post('/message', asyncHandler(async (req, res) => {
     });
   }
 
-  // Instant auto-reply via Groq (see src/groq.js) — no-ops silently if
-  // GROQ_API_KEY isn't set, if a human has already taken over this
-  // conversation (botEnabled === false), or if Groq itself decides the
-  // question needs a human. Runs in the same request as the visitor's
-  // message so the reply is already saved by the time the widget's next
-  // poll (~4s) comes around.
-  if (!conversation.muted && conversation.botEnabled) {
-    try {
-      const recent = await prisma.message.findMany({
-        where: { conversationId: conversation.id },
-        orderBy: { createdAt: 'desc' },
-        take: 10,
-      });
-      const history = recent
-        .reverse()
-        .map((m) => ({
-          role: m.direction === 'inbound' ? 'user' : 'assistant',
-          // Both sides are kept in the primary/staff language here, same as
-          // translateBetween expects elsewhere — the patient's own text is
-          // stored translated into primaryLanguage as `translatedText`.
-          content: m.direction === 'inbound' ? (m.translatedText || m.originalText) : m.originalText,
-        }))
-        .filter((m) => m.content && !/^\[[a-z]+\]$/i.test(m.content));
-
-      const auto = await getAutoReply(history);
-      if (auto && !auto.escalate && auto.reply) {
-        const { translatedText: botReplyTranslated } = await translateBetween(auto.reply, primaryLanguage, customerLanguage);
-        await addMessage(conversation.id, {
-          direction: 'outbound',
-          originalText: auto.reply,
-          detectedLanguage: 'bot',
-          translatedText: botReplyTranslated,
-          targetLanguage: customerLanguage,
-        });
-      }
-    } catch (err) {
-      console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
-    }
-  }
+  // Instant auto-reply via Groq (see src/groq.js and runAutoReply above) —
+  // no-ops silently if GROQ_API_KEY isn't set, if a human has already taken
+  // over this conversation (botEnabled === false), or if Groq itself
+  // decides the question needs a human. Runs in the same request as the
+  // visitor's message so the reply is already saved by the time the
+  // widget's next poll (~4s) comes around.
+  await runAutoReply(conversation, primaryLanguage, customerLanguage);
 
   res.json({ message: saved, detectedLanguage: customerLanguage });
+}));
+
+// A visitor shares their current GPS location (the widget's "Share my
+// location" button - see chat-widget.js) — most useful mid-way through the
+// ambulance/emergency flow, but works standalone too (e.g. "which branch is
+// closest to me"). Stored the same shape as every other location message
+// (see extractIncoming in webhook.js and the dashboard's own location send
+// in api.js) so it renders identically everywhere.
+router.post('/location', asyncHandler(async (req, res) => {
+  const { visitorId, latitude, longitude } = req.body;
+  if (!visitorId || typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return res.status(400).json({ error: 'visitorId, latitude, and longitude (numbers) are required' });
+  }
+
+  const primaryLanguage = await getPrimaryLanguage();
+  const conversation = await getOrCreateConversation('webchat', visitorId, null);
+
+  const saved = await addMessage(conversation.id, {
+    direction: 'inbound',
+    originalText: '[location]',
+    translatedText: '[location]',
+    detectedLanguage: conversation.customerLanguage || 'n/a',
+    targetLanguage: primaryLanguage,
+    messageType: 'location',
+    extra: JSON.stringify({ latitude, longitude }),
+  });
+
+  if (!conversation.muted) {
+    await prisma.conversation.update({ where: { id: conversation.id }, data: { unreadCount: { increment: 1 } } });
+  }
+
+  await runAutoReply(conversation, primaryLanguage, conversation.customerLanguage || 'en');
+
+  res.json({ message: saved });
 }));
 
 // The widget polls this to render the full thread, including the agent's
