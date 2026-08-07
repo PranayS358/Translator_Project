@@ -45,8 +45,32 @@ model Conversation {
   urgent         Boolean   @default(false)
   createdAt      DateTime  @default(now())
   messages       Message[]
+  appointments   Appointment[]
 
   @@unique([channel, contactKey])
+}
+
+// Created by the Groq bot the moment it notes a booking request (see the
+// [[APPT|...]] marker in src/groq.js's systemPrompt) - the bot only ever
+// tells the PATIENT their request is "noted, front desk will confirm", but
+// this row is what src/reminders.js actually schedules 24h/1h reminders and
+// a post-visit follow-up against. Nothing here means a human has actually
+// confirmed the slot with the patient - status is purely informational for
+// now (no dashboard UI to change it yet).
+model Appointment {
+  id               String       @id @default(cuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id])
+  department       String
+  doctorName       String
+  scheduledAt      DateTime
+  status           String       @default("requested") // "requested" | "confirmed" | "completed" | "cancelled"
+  reminder24hSent  Boolean      @default(false)
+  reminder1hSent   Boolean      @default(false)
+  followUpSent     Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+
+  @@index([scheduledAt])
 }
 
 model Message {

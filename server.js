@@ -9,6 +9,7 @@ const apiRouter = require('./src/routes/api');
 const widgetApiRouter = require('./src/routes/widget');
 const mediaRouter = require('./src/routes/media');
 const { requireApiKey, apiRateLimiter } = require('./src/security');
+const { startReminderScheduler } = require('./src/reminders');
 
 const app = express();
 
@@ -101,4 +102,8 @@ app.listen(PORT, () => {
   console.log(`📡  Messenger/Instagram webhook:   http://localhost:${PORT}/webhook/meta`);
   console.log(`💬  Widget script:                 http://localhost:${PORT}/widget-embed/chat-widget.js`);
   console.log('===========================================================\n');
+
+  // Appointment reminders / post-visit follow-up (see src/reminders.js for
+  // the Render free-tier sleep caveat this comes with).
+  startReminderScheduler();
 });

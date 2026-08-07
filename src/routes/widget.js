@@ -11,7 +11,7 @@ const prisma = require('../db');
 const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage, toPublicMessages } = require('../conversations');
-const { getAutoReply } = require('../groq');
+const { getAutoReply, nearestBranch } = require('../groq');
 const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
@@ -29,15 +29,22 @@ async function getPrimaryLanguage() {
 
 // Turns a stored message into one line of context for the bot. Plain
 // placeholders like "[image]" carry no useful text, but a shared location
-// is exactly the thing the ambulance flow (src/groq.js) needs to see and
-// react to - so unlike other placeholders, describe it with an actual
-// coordinate/maps link instead of dropping it from history entirely.
+// is exactly the thing the ambulance flow AND the nearest-branch finder
+// (src/groq.js) need to see and react to - so unlike other placeholders,
+// describe it with an actual coordinate/maps link (and the nearest branch,
+// computed here rather than left for the model to guess at) instead of
+// dropping it from history entirely.
 function describeForBot(message) {
   if (message.messageType === 'location') {
     let coords = {};
     try { coords = JSON.parse(message.extra || '{}'); } catch (err) { /* ignore */ }
     if (coords.latitude != null && coords.longitude != null) {
-      return `[Patient shared their location: https://www.google.com/maps?q=${coords.latitude},${coords.longitude}]`;
+      const mapsUrl = `https://www.google.com/maps?q=${coords.latitude},${coords.longitude}`;
+      const branch = nearestBranch(coords.latitude, coords.longitude);
+      const branchNote = branch
+        ? ` Nearest branch: ${branch.name}, ${branch.address} (~${branch.distanceKm} km away).`
+        : '';
+      return `[Patient shared their location: ${mapsUrl}.${branchNote}]`;
     }
   }
   const text = message.direction === 'inbound' ? (message.translatedText || message.originalText) : message.originalText;
@@ -78,6 +85,22 @@ async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
 
     if (auto.urgent) {
       await prisma.conversation.update({ where: { id: conversation.id }, data: { urgent: true } });
+    }
+
+    // The bot only ever tells the PATIENT their request is "noted, front
+    // desk will confirm" (see the booking rules in groq.js) - but we still
+    // track it as a real Appointment row internally so src/reminders.js has
+    // something concrete to send 24h/1h reminders and a post-visit
+    // follow-up against.
+    if (auto.appointment) {
+      await prisma.appointment.create({
+        data: {
+          conversationId: conversation.id,
+          department: auto.appointment.department,
+          doctorName: auto.appointment.doctor,
+          scheduledAt: auto.appointment.scheduledAt,
+        },
+      });
     }
   } catch (err) {
     console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
