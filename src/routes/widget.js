@@ -11,6 +11,7 @@ const prisma = require('../db');
 const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage, toPublicMessages } = require('../conversations');
+const { getAutoReply } = require('../groq');
 const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
@@ -93,6 +94,46 @@ router.post('/message', asyncHandler(async (req, res) => {
       where: { id: conversation.id },
       data: { unreadCount: { increment: 1 } },
     });
+  }
+
+  // Instant auto-reply via Groq (see src/groq.js) — no-ops silently if
+  // GROQ_API_KEY isn't set, if a human has already taken over this
+  // conversation (botEnabled === false), or if Groq itself decides the
+  // question needs a human. Runs in the same request as the visitor's
+  // message so the reply is already saved by the time the widget's next
+  // poll (~4s) comes around.
+  if (!conversation.muted && conversation.botEnabled) {
+    try {
+      const recent = await prisma.message.findMany({
+        where: { conversationId: conversation.id },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      });
+      const history = recent
+        .reverse()
+        .map((m) => ({
+          role: m.direction === 'inbound' ? 'user' : 'assistant',
+          // Both sides are kept in the primary/staff language here, same as
+          // translateBetween expects elsewhere — the patient's own text is
+          // stored translated into primaryLanguage as `translatedText`.
+          content: m.direction === 'inbound' ? (m.translatedText || m.originalText) : m.originalText,
+        }))
+        .filter((m) => m.content && !/^\[[a-z]+\]$/i.test(m.content));
+
+      const auto = await getAutoReply(history);
+      if (auto && !auto.escalate && auto.reply) {
+        const { translatedText: botReplyTranslated } = await translateBetween(auto.reply, primaryLanguage, customerLanguage);
+        await addMessage(conversation.id, {
+          direction: 'outbound',
+          originalText: auto.reply,
+          detectedLanguage: 'bot',
+          translatedText: botReplyTranslated,
+          targetLanguage: customerLanguage,
+        });
+      }
+    } catch (err) {
+      console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
+    }
   }
 
   res.json({ message: saved, detectedLanguage: customerLanguage });

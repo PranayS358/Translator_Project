@@ -108,17 +108,26 @@ router.post('/conversations/:id/reply', asyncHandler(async (req, res) => {
     targetLanguage: targetLang,
   });
 
+  // A human just replied by hand — stop the Groq auto-reply bot (src/groq.js)
+  // from answering this conversation's future messages until it's turned
+  // back on, so it never talks over the agent who's now handling this chat.
+  if (conversation.botEnabled) {
+    await prisma.conversation.update({ where: { id: conversation.id }, data: { botEnabled: false } });
+  }
+
   res.json({ message: saved, sent: !!sendResult });
 }));
 
 // Update conversation flags: favourite, muted, unreadCount (used for
-// mute/favourite toggles and mark-as-read / mark-as-unread).
+// mute/favourite toggles and mark-as-read / mark-as-unread). Also used to
+// flip botEnabled back on after a human has taken over a conversation.
 router.patch('/conversations/:id', asyncHandler(async (req, res) => {
-  const { favourite, muted, unreadCount, displayName } = req.body;
+  const { favourite, muted, unreadCount, displayName, botEnabled } = req.body;
   const data = {};
   if (typeof favourite === 'boolean') data.favourite = favourite;
   if (typeof muted === 'boolean') data.muted = muted;
   if (typeof unreadCount === 'number') data.unreadCount = unreadCount;
+  if (typeof botEnabled === 'boolean') data.botEnabled = botEnabled;
   if (typeof displayName === 'string') {
     // Empty string clears the custom name, reverting the list to show the
     // raw contactKey (e.g. the webchat visitor id) again.

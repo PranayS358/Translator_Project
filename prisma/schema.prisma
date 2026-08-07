@@ -27,6 +27,12 @@ model Conversation {
   // chat there" - inbound WhatsApp messages from this number then merge into
   // THIS conversation instead of creating a separate whatsapp-channel one.
   linkedWhatsapp String?   @unique
+  // Whether the Groq auto-reply bot is allowed to answer new inbound
+  // messages on this conversation (see src/groq.js). Starts true; flipped to
+  // false the moment a human agent sends a manual reply from the dashboard
+  // (src/routes/api.js), so the bot never talks over a human who has taken
+  // over. Can be flipped back on via PATCH /api/conversations/:id.
+  botEnabled     Boolean   @default(true)
   // Auto-detected (via franc) from the visitor's first webchat message, or
   // explicitly set if they use the widget's "change language" button. Locked
   // in for the rest of the conversation so every message - both directions -
