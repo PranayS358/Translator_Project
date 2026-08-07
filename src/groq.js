@@ -32,35 +32,39 @@ Location/contact details: see the "Contact" page on the website.`;
 
 // Demo roster — matches the departments actually listed on the HC site's
 // "Our Services" section. Override with a DOCTOR_ROSTER env var containing
-// JSON in this same shape: { "Department": [{ "name": "...", "popular": true }] }.
-// The first doctor marked popular:true in a department is who the bot
-// recommends when a patient says they have no preference.
+// JSON in this same shape: { "Department": [{ "name": "...", "popular": true,
+// "degree": "...", "experienceYears": 0, "fee": 0 }] }. degree/experienceYears/fee
+// are optional per-doctor (formatRoster() below just omits whatever's missing)
+// but are what let the bot answer "who are the doctors" with real credentials
+// and cost instead of vague/invented ones. The first doctor marked
+// popular:true in a department is who the bot recommends when a patient says
+// they have no preference. fee is in INR, per visit.
 const DEFAULT_DOCTOR_ROSTER = {
   'General Checkup': [
-    { name: 'Dr. Aisha Rahman', popular: true },
-    { name: 'Dr. Vikram Shah' },
-    { name: 'Dr. Leena Fernandes' },
+    { name: 'Dr. Aisha Rahman', popular: true, degree: 'MBBS, MD (General Medicine)', experienceYears: 12, fee: 500 },
+    { name: 'Dr. Vikram Shah', degree: 'MBBS', experienceYears: 8, fee: 400 },
+    { name: 'Dr. Leena Fernandes', degree: 'MBBS, MD (General Medicine)', experienceYears: 15, fee: 550 },
   ],
   'Cardiology': [
-    { name: 'Dr. Rohan Mehta', popular: true },
-    { name: 'Dr. Priya Nair' },
+    { name: 'Dr. Rohan Mehta', popular: true, degree: 'MBBS, MD, DM (Cardiology)', experienceYears: 14, fee: 900 },
+    { name: 'Dr. Priya Nair', degree: 'MBBS, DNB (Cardiology)', experienceYears: 9, fee: 750 },
   ],
   'Pediatrics': [
-    { name: 'Dr. Sana Iqbal', popular: true },
-    { name: 'Dr. Karan Bhatt' },
+    { name: 'Dr. Sana Iqbal', popular: true, degree: 'MBBS, MD (Pediatrics)', experienceYears: 11, fee: 600 },
+    { name: 'Dr. Karan Bhatt', degree: 'MBBS, DCH', experienceYears: 7, fee: 500 },
   ],
   'Dermatology': [
-    { name: 'Dr. Farah Sheikh', popular: true },
-    { name: 'Dr. Imran Qureshi' },
+    { name: 'Dr. Farah Sheikh', popular: true, degree: 'MBBS, MD (Dermatology)', experienceYears: 10, fee: 700 },
+    { name: 'Dr. Imran Qureshi', degree: 'MBBS, DDVL', experienceYears: 6, fee: 550 },
   ],
   'Emergency Care': [
-    { name: 'Dr. Omar Siddiqui', popular: true },
-    { name: 'Dr. Meera Iyer' },
+    { name: 'Dr. Omar Siddiqui', popular: true, degree: 'MBBS, MD (Emergency Medicine)', experienceYears: 13, fee: 650 },
+    { name: 'Dr. Meera Iyer', degree: 'MBBS, DNB (Emergency Medicine)', experienceYears: 8, fee: 550 },
   ],
   'Dental Care': [
-    { name: 'Dr. Neha Kapoor', popular: true },
-    { name: 'Dr. Arjun Malhotra' },
-    { name: 'Dr. Simran Kaur' },
+    { name: 'Dr. Neha Kapoor', popular: true, degree: 'BDS, MDS (Orthodontics)', experienceYears: 9, fee: 400 },
+    { name: 'Dr. Arjun Malhotra', degree: 'BDS', experienceYears: 5, fee: 300 },
+    { name: 'Dr. Simran Kaur', degree: 'BDS, MDS (Periodontics)', experienceYears: 12, fee: 450 },
   ],
 };
 
@@ -99,8 +103,15 @@ function getBranches() {
 function formatRoster(roster) {
   return Object.entries(roster)
     .map(([dept, doctors]) => {
-      const names = doctors.map((d) => `${d.name}${d.popular ? ' (most popular)' : ''}`).join(', ');
-      return `- ${dept}: ${names}`;
+      const lines = doctors.map((d) => {
+        const label = `${d.name}${d.popular ? ' (most popular)' : ''}`;
+        const details = [];
+        if (d.degree) details.push(d.degree);
+        if (d.experienceYears != null) details.push(`${d.experienceYears} yrs experience`);
+        if (d.fee != null) details.push(`₹${d.fee} per visit`);
+        return details.length ? `  - ${label} — ${details.join(', ')}` : `  - ${label}`;
+      });
+      return `- ${dept}:\n${lines.join('\n')}`;
     })
     .join('\n');
 }
@@ -173,7 +184,7 @@ function systemPrompt(clinicInfo) {
 Clinic information:
 ${clinicInfo}
 
-Doctor directory (department -> doctors):
+Doctor directory (department -> doctors, with each doctor's degree, years of experience, and appointment fee):
 ${formatRoster(roster)}
 
 Upcoming available slots (offer the human-readable label when talking to the patient; the ISO timestamp next to each is only for the hidden [[APPT|...]] marker in step 5 below, never say it out loud):
@@ -181,8 +192,8 @@ ${formatSlotsForPrompt(slots)}
 
 Appointment booking flow — when a patient wants to book an appointment, follow this exact sequence, one step per message (don't skip ahead or combine steps):
 1. Ask which department/service they need, if they haven't said already.
-2. Once they name a department, share 2-3 doctor names for that department from the directory above and ask them to pick one.
-3. If they say they're unsure or have no preference, recommend the doctor marked "(most popular)" in that department and ask if that works for them.
+2. Once they name a department, share 2-3 doctors for that department from the directory above and ask them to pick one. For EACH doctor you name, always state their degree, years of experience, and appointment fee exactly as listed (e.g. "Dr. X — MBBS, MD; 10 yrs experience; ₹500 per visit") — never just the name alone.
+3. If they say they're unsure or have no preference, recommend the doctor marked "(most popular)" in that department — again including their degree, experience, and fee — and ask if that works for them.
 4. Only after a doctor is chosen (by name, or by accepting your recommendation), offer 2-3 slot options for that department from "Upcoming available slots" above, using the human-readable label only.
 5. Once they pick a slot, do NOT say the appointment is booked or confirmed. Say you've noted their request (doctor, department, day/time) and that the front desk will confirm it shortly — matching the booking rule below. Then, on its own new line, add this marker using the department name and doctor name exactly as listed above, and the ISO timestamp of the chosen slot: [[APPT|department=<department>|doctor=<doctor>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
 
@@ -202,6 +213,7 @@ Rules:
 - Never give medical advice, diagnoses, medication guidance, or interpret symptoms.
 - Never discuss or guess at a specific patient's medical records, history, or test results — you have no access to them.
 - Only use doctor names, departments, slots, and branches exactly as listed above — never invent a name, specialty, credential, price, time slot, or branch that isn't listed.
+- Any time you mention a doctor by name, anywhere in the conversation, always include their degree, years of experience, and appointment fee from the directory above in that same message — not just on first mention.
 - You cannot actually book, confirm, reschedule, or cancel an appointment yourself — you have no access to any booking system. Never say things like "I'll set it up for you" or "consider it booked". Once a slot request is noted (step 5 above), a human takes it from there.
 - If the question asks for something not covered by the clinic information, doctor directory, or branches above (e.g. a department/specialty not listed, a specific price, real-time doctor availability beyond the slots above), or is a medical concern, a complaint, or a billing dispute, do NOT attempt to answer or work around it. Reply with EXACTLY this single token and nothing else: ESCALATE`;
 }
