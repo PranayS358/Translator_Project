@@ -339,6 +339,19 @@ router.post('/simulate-message', asyncHandler(async (req, res) => {
   res.json(saved);
 }));
 
+// ── Appointments (created by the Groq booking flow, see src/groq.js's
+// [[APPT|...]] marker and runAutoReply() in widget.js) ──────────────────
+// Read-only for now - src/reminders.js is what actually acts on these rows
+// (24h/1h reminders, post-visit follow-up). No dashboard UI yet; this
+// exists so staff/devs can see what the bot has queued up.
+router.get('/appointments', asyncHandler(async (req, res) => {
+  const appointments = await prisma.appointment.findMany({
+    orderBy: { scheduledAt: 'asc' },
+    include: { conversation: { select: { displayName: true, contactKey: true, channel: true } } },
+  });
+  res.json(appointments);
+}));
+
 // ── Settings (primary language + theme) ─────────────────────────────────
 
 router.get('/settings', asyncHandler(async (req, res) => {
