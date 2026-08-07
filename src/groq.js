@@ -314,58 +314,83 @@ async function getAutoReply(history) {
   const clinicInfo = process.env.CLINIC_INFO || DEFAULT_CLINIC_INFO;
   const messages = [{ role: 'system', content: systemPrompt(clinicInfo) }, ...history];
 
+  let reply;
   try {
     const res = await axios.post(
       GROQ_API_URL,
       { model: MODEL, messages, temperature: 0.3, max_tokens: 300 },
       { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 15000 }
     );
-    let reply = res.data?.choices?.[0]?.message?.content?.trim();
-    if (!reply) return null;
-    if (reply === 'ESCALATE' || reply.startsWith('ESCALATE')) return { escalate: true };
-
-    // Strip the hidden [[URGENT]] marker (see the ambulance flow above)
-    // before it ever reaches the patient - it's purely a signal for the
-    // caller (widget.js) to flag the conversation for staff.
-    const urgent = /\[\[URGENT\]\]/.test(reply);
-    if (urgent) reply = reply.replace(/\[\[URGENT\]\]/g, '').trim();
-
-    // Strip and parse the hidden [[APPT|...]] marker (see step 5 of the
-    // booking flow above) so the caller can create a real Appointment row -
-    // needed for src/reminders.js to have something to schedule against.
-    // Falls back to no-appointment (not an error) if the model's ISO
-    // timestamp doesn't parse, since the patient-facing reply is still safe
-    // to send either way.
-    let appointment = null;
-    const apptMatch = reply.match(/\[\[APPT\|department=([^|]+)\|doctor=([^|]+)\|when=([^\]]+)\]\]/);
-    if (apptMatch) {
-      reply = reply.replace(apptMatch[0], '').trim();
-      const scheduledAt = new Date(apptMatch[3].trim());
-      if (!isNaN(scheduledAt.getTime())) {
-        appointment = { department: apptMatch[1].trim(), doctor: apptMatch[2].trim(), scheduledAt };
-      }
-    }
-
-    // Strip and parse the hidden [[TESTBOOK|...]] marker (see step 4 of the
-    // test booking flow above) so the caller can create a real TestBooking
-    // row - same pattern as [[APPT|...]] above, just for standalone
-    // diagnostic tests instead of doctor consultations.
-    let testBooking = null;
-    const testMatch = reply.match(/\[\[TESTBOOK\|department=([^|]+)\|test=([^|]+)\|fee=([^|]+)\|when=([^\]]+)\]\]/);
-    if (testMatch) {
-      reply = reply.replace(testMatch[0], '').trim();
-      const scheduledAt = new Date(testMatch[4].trim());
-      const fee = parseInt(testMatch[3].trim(), 10);
-      if (!isNaN(scheduledAt.getTime()) && !isNaN(fee)) {
-        testBooking = { department: testMatch[1].trim(), test: testMatch[2].trim(), fee, scheduledAt };
-      }
-    }
-
-    return { escalate: false, reply, urgent, appointment, testBooking };
+    reply = res.data?.choices?.[0]?.message?.content?.trim();
   } catch (err) {
-    console.error('Groq auto-reply error:', err.response?.data || err.message);
-    return null;
+    // Groq's openai/gpt-oss-20b occasionally wraps a perfectly good
+    // plain-text reply in a bogus "tool call" envelope instead of returning
+    // it as normal content - its harmony chat template leaking a
+    // channel/tool-call structure through even though we never define any
+    // tools - which the API then rejects with a tool_use_failed error.
+    // Seen in practice on longer, list-heavy replies (e.g. reciting the
+    // doctor/test directories below). The reply text the model actually
+    // meant to send is still sitting in that rejected call's "arguments",
+    // so recover it from there instead of dropping the reply / silently
+    // escalating to a human over what's really just a formatting quirk.
+    const errData = err.response?.data?.error;
+    if (errData?.code === 'tool_use_failed' && typeof errData.failed_generation === 'string') {
+      try {
+        const parsed = JSON.parse(errData.failed_generation);
+        if (typeof parsed?.arguments === 'string' && parsed.arguments.trim()) {
+          reply = parsed.arguments.trim();
+        }
+      } catch (parseErr) {
+        // couldn't recover it - reply stays undefined, handled below
+      }
+    }
+    if (reply === undefined) {
+      console.error('Groq auto-reply error:', errData || err.message);
+      return null;
+    }
   }
+
+  if (!reply) return null;
+  if (reply === 'ESCALATE' || reply.startsWith('ESCALATE')) return { escalate: true };
+
+  // Strip the hidden [[URGENT]] marker (see the ambulance flow above)
+  // before it ever reaches the patient - it's purely a signal for the
+  // caller (widget.js) to flag the conversation for staff.
+  const urgent = /\[\[URGENT\]\]/.test(reply);
+  if (urgent) reply = reply.replace(/\[\[URGENT\]\]/g, '').trim();
+
+  // Strip and parse the hidden [[APPT|...]] marker (see step 5 of the
+  // booking flow above) so the caller can create a real Appointment row -
+  // needed for src/reminders.js to have something to schedule against.
+  // Falls back to no-appointment (not an error) if the model's ISO
+  // timestamp doesn't parse, since the patient-facing reply is still safe
+  // to send either way.
+  let appointment = null;
+  const apptMatch = reply.match(/\[\[APPT\|department=([^|]+)\|doctor=([^|]+)\|when=([^\]]+)\]\]/);
+  if (apptMatch) {
+    reply = reply.replace(apptMatch[0], '').trim();
+    const scheduledAt = new Date(apptMatch[3].trim());
+    if (!isNaN(scheduledAt.getTime())) {
+      appointment = { department: apptMatch[1].trim(), doctor: apptMatch[2].trim(), scheduledAt };
+    }
+  }
+
+  // Strip and parse the hidden [[TESTBOOK|...]] marker (see step 4 of the
+  // test booking flow above) so the caller can create a real TestBooking
+  // row - same pattern as [[APPT|...]] above, just for standalone
+  // diagnostic tests instead of doctor consultations.
+  let testBooking = null;
+  const testMatch = reply.match(/\[\[TESTBOOK\|department=([^|]+)\|test=([^|]+)\|fee=([^|]+)\|when=([^\]]+)\]\]/);
+  if (testMatch) {
+    reply = reply.replace(testMatch[0], '').trim();
+    const scheduledAt = new Date(testMatch[4].trim());
+    const fee = parseInt(testMatch[3].trim(), 10);
+    if (!isNaN(scheduledAt.getTime()) && !isNaN(fee)) {
+      testBooking = { department: testMatch[1].trim(), test: testMatch[2].trim(), fee, scheduledAt };
+    }
+  }
+
+  return { escalate: false, reply, urgent, appointment, testBooking };
 }
 
 module.exports = {
