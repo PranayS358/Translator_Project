@@ -102,6 +102,22 @@ async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
         },
       });
     }
+
+    // Same pattern as auto.appointment above, but for a standalone
+    // diagnostic test booking (see the [[TESTBOOK|...]] marker and test
+    // booking flow in groq.js) - gives src/reminders.js a TestBooking row
+    // to send 24h/1h reminders against.
+    if (auto.testBooking) {
+      await prisma.testBooking.create({
+        data: {
+          conversationId: conversation.id,
+          department: auto.testBooking.department,
+          testName: auto.testBooking.test,
+          fee: auto.testBooking.fee,
+          scheduledAt: auto.testBooking.scheduledAt,
+        },
+      });
+    }
   } catch (err) {
     console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
   }

@@ -352,6 +352,18 @@ router.get('/appointments', asyncHandler(async (req, res) => {
   res.json(appointments);
 }));
 
+// ── Test bookings (standalone diagnostic tests, created by the Groq booking
+// flow, see src/groq.js's [[TESTBOOK|...]] marker and runAutoReply() in
+// widget.js) ─────────────────────────────────────────────────────────────
+// Read-only for now, same rationale as /appointments above.
+router.get('/test-bookings', asyncHandler(async (req, res) => {
+  const testBookings = await prisma.testBooking.findMany({
+    orderBy: { scheduledAt: 'asc' },
+    include: { conversation: { select: { displayName: true, contactKey: true, channel: true } } },
+  });
+  res.json(testBookings);
+}));
+
 // ── Settings (primary language + theme) ─────────────────────────────────
 
 router.get('/settings', asyncHandler(async (req, res) => {

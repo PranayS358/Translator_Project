@@ -1,7 +1,9 @@
 // Sends appointment reminders (24h and 1h before) and a post-visit
 // follow-up/feedback request, based on Appointment rows created by the
 // Groq booking flow (see the [[APPT|...]] marker in src/groq.js and
-// runAutoReply() in src/routes/widget.js).
+// runAutoReply() in src/routes/widget.js). Also sends 24h/1h reminders for
+// standalone TestBooking rows (see the [[TESTBOOK|...]] marker) - tests
+// don't get a post-visit follow-up, just the two reminders.
 //
 // IMPORTANT caveat: this runs as a setInterval inside the same long-lived
 // Node process as the rest of the app. Render's free tier spins the dyno
@@ -116,6 +118,51 @@ async function sendReminders() {
       await prisma.appointment.update({ where: { id: appt.id }, data: { followUpSent: true, status: 'completed' } });
     } catch (err) {
       console.error(`Follow-up failed for appointment ${appt.id}:`, err.message);
+    }
+  }
+
+  // ── TestBooking reminders (standalone diagnostic tests, e.g. X-ray, blood
+  // work — see the [[TESTBOOK|...]] marker in src/groq.js). Same idempotent
+  // flag + wide-window pattern as the Appointment reminders above; no
+  // post-visit follow-up for tests, just the 24h/1h heads-up.
+
+  // 24h-before (23-25h window)
+  const testsIn24h = await prisma.testBooking.findMany({
+    where: {
+      status: { in: ['requested', 'confirmed'] },
+      reminder24hSent: false,
+      scheduledAt: { gte: new Date(now.getTime() + hours(23)), lte: new Date(now.getTime() + hours(25)) },
+    },
+    include: { conversation: true },
+  });
+  for (const test of testsIn24h) {
+    try {
+      const when = test.scheduledAt.toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' });
+      await deliver(test.conversation, primaryLanguage,
+        `Reminder: you have a ${test.testName} (${test.department}) booked for tomorrow at ${when}, cost ₹${test.fee}. Reply here if you need to reschedule.`);
+      await prisma.testBooking.update({ where: { id: test.id }, data: { reminder24hSent: true } });
+    } catch (err) {
+      console.error(`24h reminder failed for test booking ${test.id}:`, err.message);
+    }
+  }
+
+  // 1h-before (30-90 min window)
+  const testsIn1h = await prisma.testBooking.findMany({
+    where: {
+      status: { in: ['requested', 'confirmed'] },
+      reminder1hSent: false,
+      scheduledAt: { gte: new Date(now.getTime() + 30 * 60 * 1000), lte: new Date(now.getTime() + 90 * 60 * 1000) },
+    },
+    include: { conversation: true },
+  });
+  for (const test of testsIn1h) {
+    try {
+      const when = test.scheduledAt.toLocaleString('en-IN', { timeStyle: 'short' });
+      await deliver(test.conversation, primaryLanguage,
+        `Reminder: your ${test.testName} (${test.department}) is in about an hour, at ${when}. See you soon!`);
+      await prisma.testBooking.update({ where: { id: test.id }, data: { reminder1hSent: true } });
+    } catch (err) {
+      console.error(`1h reminder failed for test booking ${test.id}:`, err.message);
     }
   }
 }

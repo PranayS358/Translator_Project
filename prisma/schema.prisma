@@ -46,6 +46,7 @@ model Conversation {
   createdAt      DateTime  @default(now())
   messages       Message[]
   appointments   Appointment[]
+  testBookings   TestBooking[]
 
   @@unique([channel, contactKey])
 }
@@ -68,6 +69,28 @@ model Appointment {
   reminder24hSent  Boolean      @default(false)
   reminder1hSent   Boolean      @default(false)
   followUpSent     Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+
+  @@index([scheduledAt])
+}
+
+// Created by the Groq bot the moment it notes a diagnostic test booking
+// request (see the [[TESTBOOK|...]] marker in src/groq.js's systemPrompt) -
+// same "noted, not confirmed" pattern as Appointment above, just for
+// standalone tests (X-ray, blood work, etc.) booked without seeing a doctor.
+// src/reminders.js sends 24h/1h reminders against this the same way it does
+// for Appointment rows.
+model TestBooking {
+  id               String       @id @default(cuid())
+  conversationId   String
+  conversation     Conversation @relation(fields: [conversationId], references: [id])
+  department       String
+  testName         String
+  fee              Int
+  scheduledAt      DateTime
+  status           String       @default("requested") // "requested" | "confirmed" | "completed" | "cancelled"
+  reminder24hSent  Boolean      @default(false)
+  reminder1hSent   Boolean      @default(false)
   createdAt        DateTime     @default(now())
 
   @@index([scheduledAt])

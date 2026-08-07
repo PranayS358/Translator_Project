@@ -7,14 +7,16 @@
 // ambiguous — it's instructed to escalate to a human instead of guessing.
 //
 // There's no real scheduling backend behind this demo, so "booking" here
-// means: walk the patient through department -> doctor -> time slot using
-// real (if fictional) names/slots we hand it below, then hand the collected
-// request to a human to actually confirm — never claim to complete a
-// booking itself (see the rules in systemPrompt()). It DOES create a real
-// Appointment row once a slot is picked (see the [[APPT|...]] marker below)
-// so src/reminders.js has something concrete to send reminders/follow-ups
-// against - the "never claim it's booked" rule is about what the bot tells
-// the PATIENT, not about whether we track the request internally.
+// means: walk the patient through department -> doctor -> time slot (or,
+// for standalone diagnostic tests, department -> test -> time slot) using
+// real (if fictional) names/slots/costs we hand it below, then hand the
+// collected request to a human to actually confirm — never claim to
+// complete a booking itself (see the rules in systemPrompt()). It DOES
+// create a real Appointment row (doctor bookings) or TestBooking row (test
+// bookings) once a slot is picked (see the [[APPT|...]] / [[TESTBOOK|...]]
+// markers below) so src/reminders.js has something concrete to send
+// reminders against - the "never claim it's booked" rule is about what the
+// bot tells the PATIENT, not about whether we track the request internally.
 const axios = require('axios');
 
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
@@ -68,6 +70,31 @@ const DEFAULT_DOCTOR_ROSTER = {
   ],
 };
 
+// Demo diagnostic test catalog — for patients who want to book a standalone
+// test (X-ray, blood work, etc.) rather than a doctor consultation. Override
+// with a TEST_CATALOG env var containing JSON in this same shape:
+// { "Department": [{ "name": "...", "fee": 0 }] }. fee is in INR.
+const DEFAULT_TEST_CATALOG = {
+  'Radiology': [
+    { name: 'Chest X-Ray', fee: 800 },
+    { name: 'Abdominal Ultrasound', fee: 1200 },
+    { name: 'CT Scan - Head', fee: 3500 },
+    { name: 'MRI - Brain', fee: 4500 },
+  ],
+  'Pathology / Lab Tests': [
+    { name: 'Complete Blood Count (CBC) - incl. Platelet Count', fee: 300 },
+    { name: 'Blood Sugar (Fasting & PP)', fee: 250 },
+    { name: 'Lipid Profile', fee: 600 },
+    { name: 'Thyroid Profile (T3, T4, TSH)', fee: 700 },
+    { name: 'Liver Function Test (LFT)', fee: 650 },
+  ],
+  'Cardiology Diagnostics': [
+    { name: 'ECG', fee: 400 },
+    { name: 'Echocardiogram (2D Echo)', fee: 1800 },
+    { name: 'TMT (Treadmill Test)', fee: 1500 },
+  ],
+};
+
 // Demo branches (Bengaluru) — override with a BRANCHES env var containing
 // JSON: [{ "name": "...", "address": "...", "lat": 0, "lng": 0 }, ...].
 // Used by nearestBranch() below to answer "which branch is closest to me"
@@ -86,6 +113,17 @@ function getDoctorRoster() {
   } catch (err) {
     console.error('DOCTOR_ROSTER env var is not valid JSON, falling back to the demo roster:', err.message);
     return DEFAULT_DOCTOR_ROSTER;
+  }
+}
+
+function getTestCatalog() {
+  const raw = process.env.TEST_CATALOG;
+  if (!raw) return DEFAULT_TEST_CATALOG;
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('TEST_CATALOG env var is not valid JSON, falling back to the demo catalog:', err.message);
+    return DEFAULT_TEST_CATALOG;
   }
 }
 
@@ -111,6 +149,15 @@ function formatRoster(roster) {
         if (d.fee != null) details.push(`₹${d.fee} per visit`);
         return details.length ? `  - ${label} — ${details.join(', ')}` : `  - ${label}`;
       });
+      return `- ${dept}:\n${lines.join('\n')}`;
+    })
+    .join('\n');
+}
+
+function formatTestCatalog(catalog) {
+  return Object.entries(catalog)
+    .map(([dept, tests]) => {
+      const lines = tests.map((t) => `  - ${t.name} — ₹${t.fee}`);
       return `- ${dept}:\n${lines.join('\n')}`;
     })
     .join('\n');
@@ -178,6 +225,7 @@ function nearestBranch(lat, lng) {
 
 function systemPrompt(clinicInfo) {
   const roster = getDoctorRoster();
+  const testCatalog = getTestCatalog();
   const slots = nextAvailableSlots();
   return `You are a friendly front-desk assistant embedded in a healthcare clinic's website chat widget. You may ONLY answer general, non-medical logistics questions using the information below.
 
@@ -187,15 +235,24 @@ ${clinicInfo}
 Doctor directory (department -> doctors, with each doctor's degree, years of experience, and appointment fee):
 ${formatRoster(roster)}
 
-Upcoming available slots (offer the human-readable label when talking to the patient; the ISO timestamp next to each is only for the hidden [[APPT|...]] marker in step 5 below, never say it out loud):
+Diagnostic test catalog (department -> standalone tests, with each test's cost — for patients booking a test/lab work directly, not a doctor consultation):
+${formatTestCatalog(testCatalog)}
+
+Upcoming available slots (offer the human-readable label when talking to the patient; the ISO timestamp next to each is only for the hidden [[APPT|...]] / [[TESTBOOK|...]] markers below, never say it out loud):
 ${formatSlotsForPrompt(slots)}
 
-Appointment booking flow — when a patient wants to book an appointment, follow this exact sequence, one step per message (don't skip ahead or combine steps):
+Appointment booking flow — when a patient wants to book an appointment WITH A DOCTOR, follow this exact sequence, one step per message (don't skip ahead or combine steps):
 1. Ask which department/service they need, if they haven't said already.
 2. Once they name a department, share 2-3 doctors for that department from the directory above and ask them to pick one. For EACH doctor you name, always state their degree, years of experience, and appointment fee exactly as listed (e.g. "Dr. X — MBBS, MD; 10 yrs experience; ₹500 per visit") — never just the name alone.
 3. If they say they're unsure or have no preference, recommend the doctor marked "(most popular)" in that department — again including their degree, experience, and fee — and ask if that works for them.
 4. Only after a doctor is chosen (by name, or by accepting your recommendation), offer 2-3 slot options for that department from "Upcoming available slots" above, using the human-readable label only.
 5. Once they pick a slot, do NOT say the appointment is booked or confirmed. Say you've noted their request (doctor, department, day/time) and that the front desk will confirm it shortly — matching the booking rule below. Then, on its own new line, add this marker using the department name and doctor name exactly as listed above, and the ISO timestamp of the chosen slot: [[APPT|department=<department>|doctor=<doctor>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
+
+Test booking flow — when a patient wants to book a TEST (e.g. "book a test", "I need an X-ray", "blood test", "lab work") rather than see a doctor, use this separate sequence instead of the appointment flow above, one step per message (don't skip ahead or combine steps):
+1. Ask which department/type of test they need, if they haven't said already, and mention the department options from the test catalog above (Radiology, Pathology / Lab Tests, Cardiology Diagnostics).
+2. Once they name a department, list the available tests in that department from the catalog above, each with its cost exactly as listed (e.g. "Chest X-Ray — ₹800"), and ask them to pick one.
+3. Once a test is chosen, offer 2-3 slot options from "Upcoming available slots" above, using the human-readable label only.
+4. Once they pick a slot, do NOT say the test is booked or confirmed. Say you've noted their request (test, department, cost, day/time) and that the lab/front desk will confirm it shortly. Then, on its own new line, add this marker using the department and test name exactly as listed above, the test's fee, and the ISO timestamp of the chosen slot: [[TESTBOOK|department=<department>|test=<test>|fee=<fee>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
 
 Symptom-based routing — if a patient describes a physical complaint or symptom (e.g. "my tooth hurts", "I have a skin rash", "my child has a fever", "chest tightness") without naming a department, and it does NOT sound like the emergency flow below, suggest the single closest-matching department from the directory above and offer to continue the booking flow with it (starting at step 2). This is routing only, never diagnosis — don't say what you think is wrong with them, only which department handles that kind of concern.
 
@@ -212,10 +269,10 @@ Rules:
 - Keep answers short (2-4 sentences), warm, and clear.
 - Never give medical advice, diagnoses, medication guidance, or interpret symptoms.
 - Never discuss or guess at a specific patient's medical records, history, or test results — you have no access to them.
-- Only use doctor names, departments, slots, and branches exactly as listed above — never invent a name, specialty, credential, price, time slot, or branch that isn't listed.
-- Any time you mention a doctor by name, anywhere in the conversation, always include their degree, years of experience, and appointment fee from the directory above in that same message — not just on first mention.
-- You cannot actually book, confirm, reschedule, or cancel an appointment yourself — you have no access to any booking system. Never say things like "I'll set it up for you" or "consider it booked". Once a slot request is noted (step 5 above), a human takes it from there.
-- If the question asks for something not covered by the clinic information, doctor directory, or branches above (e.g. a department/specialty not listed, a specific price, real-time doctor availability beyond the slots above), or is a medical concern, a complaint, or a billing dispute, do NOT attempt to answer or work around it. Reply with EXACTLY this single token and nothing else: ESCALATE`;
+- Only use doctor names, departments, slots, branches, and test names/costs exactly as listed above — never invent a name, specialty, credential, price, time slot, test, or branch that isn't listed.
+- Any time you mention a doctor by name, anywhere in the conversation, always include their degree, years of experience, and appointment fee from the directory above in that same message — not just on first mention. Same for tests: any time you mention a test by name, always include its cost from the catalog above.
+- You cannot actually book, confirm, reschedule, or cancel an appointment or test yourself — you have no access to any booking system. Never say things like "I'll set it up for you" or "consider it booked". Once a request is noted (step 5 of the appointment flow, or step 4 of the test flow), a human takes it from there.
+- If the question asks for something not covered by the clinic information, doctor directory, test catalog, or branches above (e.g. a department/specialty/test not listed, a specific price not listed, real-time availability beyond the slots above), or is a medical concern, a complaint, or a billing dispute, do NOT attempt to answer or work around it. Reply with EXACTLY this single token and nothing else: ESCALATE`;
 }
 
 /**
@@ -235,15 +292,20 @@ Rules:
  *   { escalate: true }                         - Groq decided a human should
  *                                                 handle this.
  *   { escalate: false, reply, urgent,
- *     appointment }                            - safe to send `reply`
+ *     appointment, testBooking }               - safe to send `reply`
  *                                                 straight to the patient.
  *                                                 `urgent` is true mid an
  *                                                 active ambulance exchange.
  *                                                 `appointment` is
  *                                                 { department, doctor,
  *                                                 scheduledAt } the moment a
- *                                                 booking request was noted,
- *                                                 else null.
+ *                                                 doctor booking request was
+ *                                                 noted, else null.
+ *                                                 `testBooking` is
+ *                                                 { department, test, fee,
+ *                                                 scheduledAt } the moment a
+ *                                                 test booking request was
+ *                                                 noted, else null.
  */
 async function getAutoReply(history) {
   const apiKey = process.env.GROQ_API_KEY;
@@ -284,7 +346,22 @@ async function getAutoReply(history) {
       }
     }
 
-    return { escalate: false, reply, urgent, appointment };
+    // Strip and parse the hidden [[TESTBOOK|...]] marker (see step 4 of the
+    // test booking flow above) so the caller can create a real TestBooking
+    // row - same pattern as [[APPT|...]] above, just for standalone
+    // diagnostic tests instead of doctor consultations.
+    let testBooking = null;
+    const testMatch = reply.match(/\[\[TESTBOOK\|department=([^|]+)\|test=([^|]+)\|fee=([^|]+)\|when=([^\]]+)\]\]/);
+    if (testMatch) {
+      reply = reply.replace(testMatch[0], '').trim();
+      const scheduledAt = new Date(testMatch[4].trim());
+      const fee = parseInt(testMatch[3].trim(), 10);
+      if (!isNaN(scheduledAt.getTime()) && !isNaN(fee)) {
+        testBooking = { department: testMatch[1].trim(), test: testMatch[2].trim(), fee, scheduledAt };
+      }
+    }
+
+    return { escalate: false, reply, urgent, appointment, testBooking };
   } catch (err) {
     console.error('Groq auto-reply error:', err.response?.data || err.message);
     return null;
@@ -295,6 +372,7 @@ module.exports = {
   getAutoReply,
   DEFAULT_CLINIC_INFO,
   DEFAULT_DOCTOR_ROSTER,
+  DEFAULT_TEST_CATALOG,
   DEFAULT_BRANCHES,
   EMERGENCY_NUMBER,
   nearestBranch,
