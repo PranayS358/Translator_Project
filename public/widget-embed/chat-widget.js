@@ -7,9 +7,13 @@
  *           data-title="Chat with us"
  *           data-color="#0f766e"></script>
  *
- * The visitor types in whatever language they pick; the site's agent always
- * sees/replies in the primary language configured in the translator
- * dashboard's Settings. Everything is translated both ways automatically.
+ * Patients sign up / log in before they can chat (see the auth screen
+ * below) - that's what lets one patient have several separate chats (one
+ * per booking, say) all listed together, and what makes booking an
+ * appointment or any other service require an account. The patient types
+ * in whatever language they pick; the site's agent always sees/replies in
+ * the primary language configured in the translator dashboard's Settings.
+ * Everything is translated both ways automatically.
  */
 (function () {
   var THIS_SCRIPT = document.currentScript;
@@ -25,17 +29,15 @@
     ['ur', 'Urdu'], ['bn', 'Bengali'], ['id', 'Indonesian'],
   ];
 
-  function uid() {
-    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
-    return 'v-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-  }
-
-  var visitorId = localStorage.getItem('wat_visitor_id');
-  if (!visitorId) {
-    visitorId = uid();
-    localStorage.setItem('wat_visitor_id', visitorId);
-  }
+  var TOKEN_KEY = 'wat_patient_token';
+  var authToken = localStorage.getItem(TOKEN_KEY) || null;
+  var authPatient = null; // { id, name, email } - set once /me or /login or /signup succeeds
+  var activeChatId = null; // current chat's contactKey - null until a chat is loaded/created
   var visitorLanguage = localStorage.getItem('wat_visitor_language') || '';
+
+  function authHeaders() {
+    return authToken ? { 'Authorization': 'Bearer ' + authToken } : {};
+  }
 
   // ---- Styles (scoped with a wat- prefix so it can't collide with the host page) ----
   var style = document.createElement('style');
@@ -49,9 +51,12 @@
     'overflow:hidden;z-index:999999;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
     '.wat-panel.open{display:flex;}' +
     '.wat-header{background:' + ACCENT + ';color:#fff;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:14px;gap:8px;}' +
+    '.wat-header .wat-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '.wat-header-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;}' +
     '.wat-header button{background:none;border:none;color:#fff;font-size:18px;cursor:pointer;line-height:1;}' +
+    '.wat-icon-btn{background:rgba(255,255,255,.15)!important;border-radius:6px!important;padding:4px 7px!important;font-size:12px!important;font-weight:600;white-space:nowrap;}' +
     '.wat-header .wat-lang-select{margin-right:4px;padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,.6);' +
-    'background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;cursor:pointer;max-width:110px;}' +
+    'background:rgba(255,255,255,.15);color:#fff;font-size:12px;font-weight:600;cursor:pointer;max-width:90px;}' +
     '.wat-header .wat-lang-select option{color:#111827;}' +
     '.wat-body{flex:1;overflow-y:auto;padding:12px;background:#f6f7f9;display:flex;flex-direction:column;gap:8px;}' +
     '.wat-msg{max-width:78%;padding:8px 12px;border-radius:10px;font-size:13px;line-height:1.4;word-wrap:break-word;}' +
@@ -68,7 +73,29 @@
     '.wat-wa-form{padding:8px 12px;background:#ecfdf5;display:none;gap:6px;}' +
     '.wat-wa-form.open{display:flex;}' +
     '.wat-wa-form input{flex:1;border:1px solid #a7f3d0;border-radius:8px;padding:6px 8px;font-size:12px;}' +
-    '.wat-wa-form button{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:0 10px;font-size:12px;cursor:pointer;}';
+    '.wat-wa-form button{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:0 10px;font-size:12px;cursor:pointer;}' +
+    // Auth screen (login/signup) - fills the body area in place of messages
+    // until the patient signs in.
+    '.wat-auth{flex:1;overflow-y:auto;padding:20px 18px;background:#fff;display:flex;flex-direction:column;gap:10px;}' +
+    '.wat-auth h3{margin:0 0 2px;font-size:15px;color:#111827;}' +
+    '.wat-auth p.wat-auth-sub{margin:0 0 8px;font-size:12px;color:#6b7280;}' +
+    '.wat-auth input{border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;font-size:13px;outline:none;}' +
+    '.wat-auth input:focus{border-color:' + ACCENT + ';}' +
+    '.wat-auth-submit{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;margin-top:4px;}' +
+    '.wat-auth-submit:disabled{opacity:.6;cursor:default;}' +
+    '.wat-auth-toggle{background:none;border:none;color:' + ACCENT + ';font-size:12px;cursor:pointer;text-decoration:underline;padding:0;margin-top:2px;align-self:flex-start;}' +
+    '.wat-auth-error{color:#b91c1c;font-size:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 8px;display:none;}' +
+    '.wat-auth-error.show{display:block;}' +
+    // Chat list overlay - toggled by the "Chats" header button
+    '.wat-chats-panel{position:absolute;top:52px;left:0;right:0;bottom:0;background:#fff;z-index:5;display:none;flex-direction:column;overflow-y:auto;}' +
+    '.wat-chats-panel.open{display:flex;}' +
+    '.wat-chats-panel-header{padding:10px 14px;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #f0f0f0;}' +
+    '.wat-chat-item{padding:12px 14px;border-bottom:1px solid #f3f4f6;cursor:pointer;display:flex;flex-direction:column;gap:2px;}' +
+    '.wat-chat-item:hover{background:#f9fafb;}' +
+    '.wat-chat-item.active{background:#ecfdf5;}' +
+    '.wat-chat-item .wat-chat-preview{font-size:12px;color:#4b5563;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '.wat-chat-item .wat-chat-time{font-size:10px;color:#9ca3af;}' +
+    '.wat-chats-empty{padding:20px 14px;font-size:12px;color:#9ca3af;text-align:center;}';
   document.head.appendChild(style);
 
   // ---- DOM ----
@@ -79,13 +106,19 @@
 
   var panel = document.createElement('div');
   panel.className = 'wat-panel';
+  panel.style.position = 'relative'; // anchors the absolutely-positioned chats overlay
   panel.innerHTML =
-    '<div class="wat-header"><span>' + TITLE + '</span>' +
-      '<span style="display:flex;align-items:center;">' +
+    '<div class="wat-header">' +
+      '<span class="wat-title">' + TITLE + '</span>' +
+      '<span class="wat-header-actions">' +
+        '<button class="wat-icon-btn wat-chats-toggle" title="Your chats" style="display:none">Chats</button>' +
+        '<button class="wat-icon-btn wat-new-chat" title="Start a new chat" style="display:none">+ New</button>' +
         '<select class="wat-lang-select" title="Change language" aria-label="Change language"></select>' +
         '<button class="wat-close" aria-label="Close">✕</button>' +
       '</span>' +
     '</div>' +
+    '<div class="wat-auth" style="display:none"></div>' +
+    '<div class="wat-chats-panel"></div>' +
     '<div class="wat-body" style="display:none"></div>' +
     '<div class="wat-wa-row" style="display:none">' +
       '<span>Prefer WhatsApp?</span>' +
@@ -105,17 +138,16 @@
   document.body.appendChild(panel);
 
   var langSelect = panel.querySelector('.wat-lang-select');
+  var authBox = panel.querySelector('.wat-auth');
+  var chatsPanel = panel.querySelector('.wat-chats-panel');
+  var chatsToggle = panel.querySelector('.wat-chats-toggle');
+  var newChatBtn = panel.querySelector('.wat-new-chat');
   var body = panel.querySelector('.wat-body');
   var footer = panel.querySelector('.wat-footer');
   var input = panel.querySelector('.wat-input');
   var sendBtn = panel.querySelector('.wat-send');
   var locBtn = panel.querySelector('.wat-loc-btn');
   var waRow = panel.querySelector('.wat-wa-row');
-  // No separate `waToggle` reference kept here - waRow's "Continue there"
-  // button gets replaced/re-bound by syncWaRow() below every time the
-  // linked status changes (or on first load), so the toggle listener lives
-  // there instead of on a variable that could go stale the moment that
-  // happens.
   var waForm = panel.querySelector('.wat-wa-form');
   var waPhone = panel.querySelector('.wat-wa-phone');
   var waSend = panel.querySelector('.wat-wa-send');
@@ -126,27 +158,8 @@
     opt.textContent = pair[1];
     langSelect.appendChild(opt);
   });
-  // Preselect whatever's already known (explicit prior choice, or whatever
-  // the backend auto-detected on an earlier message) rather than defaulting
-  // to English, so the dropdown always reflects the conversation's actual
-  // current language.
-  langSelect.value = visitorLanguage || localStorage.getItem('wat_visitor_language') || 'en';
+  langSelect.value = visitorLanguage || 'en';
 
-  function showChatUI() {
-    body.style.display = 'flex';
-    footer.style.display = 'flex';
-    waRow.style.display = 'flex';
-    loadMessages();
-  }
-
-  // No more forcing a language pick before chatting starts - the backend
-  // auto-detects the visitor's language from their first message and locks
-  // it in for the rest of the conversation. The always-visible dropdown in
-  // the header lets them correct it at any point instead.
-  showChatUI();
-
-  // Every message from here on uses the newly selected language, both for
-  // what they send and for how the agent's replies are translated back.
   langSelect.addEventListener('change', function () {
     visitorLanguage = langSelect.value;
     localStorage.setItem('wat_visitor_language', visitorLanguage);
@@ -159,13 +172,101 @@
     panel.classList.remove('open');
   });
 
-  // The dashboard and this widget both receive mediaUrl as a lightweight
-  // `/media/:id` reference (see toPublicMessage in src/conversations.js) -
-  // a relative path deliberately, since the dashboard is served from the
-  // SAME origin as that route. This widget isn't: it's embedded on a
-  // client's own site (e.g. the healthcare demo), so a bare "/media/..."
-  // resolves against THAT site's origin instead of the translator API's,
-  // producing a broken image. Resolve it against API_BASE explicitly.
+  // ── Auth screen ──────────────────────────────────────────────────────
+  var authMode = 'login'; // 'login' | 'signup'
+
+  function renderAuthScreen() {
+    var isLogin = authMode === 'login';
+    authBox.innerHTML =
+      '<h3>' + (isLogin ? 'Log in to chat' : 'Create your account') + '</h3>' +
+      '<p class="wat-auth-sub">' + (isLogin
+        ? 'Sign in to start chatting and book appointments or other services.'
+        : 'One account lets you keep track of every chat - appointments, tests, and more.') + '</p>' +
+      '<div class="wat-auth-error"></div>' +
+      (isLogin ? '' : '<input class="wat-auth-name" placeholder="Full name" />') +
+      '<input class="wat-auth-email" type="email" placeholder="Email address" />' +
+      '<input class="wat-auth-password" type="password" placeholder="Password" />' +
+      '<button class="wat-auth-submit">' + (isLogin ? 'Log in' : 'Sign up') + '</button>' +
+      '<button class="wat-auth-toggle">' + (isLogin
+        ? "Don't have an account? Sign up"
+        : 'Already have an account? Log in') + '</button>';
+
+    authBox.querySelector('.wat-auth-toggle').addEventListener('click', function () {
+      authMode = isLogin ? 'signup' : 'login';
+      renderAuthScreen();
+    });
+    authBox.querySelector('.wat-auth-submit').addEventListener('click', submitAuthForm);
+    [].forEach.call(authBox.querySelectorAll('input'), function (el) {
+      el.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuthForm(); });
+    });
+  }
+
+  function showAuthError(message) {
+    var el = authBox.querySelector('.wat-auth-error');
+    el.textContent = message;
+    el.classList.add('show');
+  }
+
+  function submitAuthForm() {
+    var isLogin = authMode === 'login';
+    var email = authBox.querySelector('.wat-auth-email').value.trim();
+    var password = authBox.querySelector('.wat-auth-password').value;
+    var name = !isLogin ? authBox.querySelector('.wat-auth-name').value.trim() : undefined;
+
+    if (!email || !password || (!isLogin && !name)) {
+      showAuthError('Please fill in all fields.');
+      return;
+    }
+
+    var submitBtn = authBox.querySelector('.wat-auth-submit');
+    submitBtn.disabled = true;
+    var originalLabel = submitBtn.textContent;
+    submitBtn.textContent = '…';
+
+    fetch(API_BASE + '/widget-api/' + (isLogin ? 'login' : 'signup'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(isLogin ? { email: email, password: password } : { name: name, email: email, password: password }),
+    })
+      .then(function (r) { return r.json().then(function (data) { return { status: r.status, data: data }; }); })
+      .then(function (res) {
+        if (res.status >= 200 && res.status < 300 && res.data.token) {
+          authToken = res.data.token;
+          authPatient = res.data.patient;
+          localStorage.setItem(TOKEN_KEY, authToken);
+          enterChatUI();
+        } else {
+          showAuthError(res.data.error || 'Something went wrong - please try again.');
+        }
+      })
+      .catch(function () {
+        showAuthError('Network error - please check your connection and try again.');
+      })
+      .finally(function () {
+        submitBtn.disabled = false;
+        submitBtn.textContent = originalLabel;
+      });
+  }
+
+  function showAuthScreen() {
+    authToken = null;
+    authPatient = null;
+    activeChatId = null;
+    localStorage.removeItem(TOKEN_KEY);
+    authMode = 'login';
+    renderAuthScreen();
+    authBox.style.display = 'flex';
+    chatsPanel.classList.remove('open');
+    body.style.display = 'none';
+    footer.style.display = 'none';
+    waRow.style.display = 'none';
+    waForm.classList.remove('open');
+    chatsToggle.style.display = 'none';
+    newChatBtn.style.display = 'none';
+  }
+
+  // ── Chat UI (post-login) ────────────────────────────────────────────
+
   function resolveMediaUrl(url) {
     if (!url) return url;
     if (/^https?:\/\//i.test(url) || url.indexOf('data:') === 0) return url;
@@ -236,17 +337,7 @@
     renderedCount = messages.length;
   }
 
-  // Keeps the "Prefer WhatsApp?" row honest on every poll, instead of only
-  // ever being set once client-side at the moment of a successful link (see
-  // the waSend handler below) and never touched again. That one-time flag
-  // used to go stale: if this conversation got deleted (e.g. via "Delete
-  // chat" in the dashboard) and the visitor kept the same tab open, the
-  // NEXT message they sent silently created a brand new, unlinked
-  // conversation row under the same visitorId - but the banner kept saying
-  // "Linked!" from the old, now-gone one, so a patient could reply on
-  // WhatsApp and never see it reflected here (their message went to
-  // whichever OTHER conversation, if any, still actually held that link).
-  var waLinkedShown = null; // tri-state cache (null/true/false) - avoids re-touching the DOM every 4s poll when nothing changed
+  var waLinkedShown = null; // tri-state cache (null/true/false), reset whenever the active chat changes
   function syncWaRow(linkedWhatsapp, waLink) {
     var isLinked = !!linkedWhatsapp;
     if (isLinked === waLinkedShown) return;
@@ -262,10 +353,22 @@
     }
   }
 
+  // Handles an expired/invalid token showing up mid-session (e.g. the JWT's
+  // 30-day expiry lapses while the tab's been open) - bounce back to the
+  // auth screen instead of silently failing every request from here on.
+  function handleAuthFailure() {
+    showAuthScreen();
+  }
+
   function loadMessages() {
-    fetch(API_BASE + '/widget-api/messages?visitorId=' + encodeURIComponent(visitorId))
-      .then(function (r) { return r.json(); })
+    if (!activeChatId) return;
+    fetch(API_BASE + '/widget-api/messages?chatId=' + encodeURIComponent(activeChatId), { headers: authHeaders() })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
       .then(function (data) {
+        if (!data) return;
         render(data.messages || []);
         syncWaRow(data.linkedWhatsapp, data.waLink);
       })
@@ -274,29 +377,26 @@
 
   function send() {
     var text = input.value.trim();
-    if (!text) return;
+    if (!text || !activeChatId) return;
     input.value = '';
-    // Only send `language` when the visitor explicitly picked one via
-    // "change language" - otherwise leave it out so the backend auto-detects
-    // (first message) or keeps using the conversation's already-locked
-    // language (every message after that).
     fetch(API_BASE + '/widget-api/message', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visitorId: visitorId, text: text, language: visitorLanguage || undefined }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ chatId: activeChatId, text: text, language: visitorLanguage || undefined }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
       .then(function (data) {
-        // Keep local state (and the header dropdown) in sync with whatever
-        // the backend locked in - auto-detected on message 1, or whatever
-        // was explicitly picked - so the dropdown always shows the
-        // conversation's actual current language.
+        if (!data) return;
         if (data.detectedLanguage) {
           visitorLanguage = data.detectedLanguage;
           localStorage.setItem('wat_visitor_language', visitorLanguage);
           langSelect.value = visitorLanguage;
         }
         loadMessages();
+        refreshChatsList(); // keeps the chat list's preview/order in sync
       })
       .catch(function () {});
   }
@@ -306,11 +406,8 @@
     if (e.key === 'Enter') send();
   });
 
-  // Lets a patient share their live GPS position instead of typing an
-  // address — mainly useful mid-way through the bot's ambulance/emergency
-  // flow (src/groq.js), which explicitly points them at this button, but
-  // works any time (e.g. "which branch is closest to me").
   locBtn.addEventListener('click', function () {
+    if (!activeChatId) return;
     if (!navigator.geolocation) {
       alert('Location sharing isn\'t supported by this browser.');
       return;
@@ -321,13 +418,14 @@
       function (pos) {
         fetch(API_BASE + '/widget-api/location', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
           body: JSON.stringify({
-            visitorId: visitorId,
+            chatId: activeChatId,
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
           }),
         })
+          .then(function (r) { if (r.status === 401) handleAuthFailure(); })
           .then(function () { loadMessages(); })
           .catch(function () {})
           .finally(function () { locBtn.disabled = false; locBtn.textContent = '📍'; });
@@ -341,42 +439,30 @@
     );
   });
 
-  // Not attached here anymore - the very first loadMessages() poll (fired by
-  // showChatUI() above) immediately rebuilds waRow's markup via syncWaRow()
-  // and (re)attaches this same toggle behavior to whatever button ends up in
-  // it. See syncWaRow()'s "not linked" branch.
-
   waSend.addEventListener('click', function () {
     var phone = waPhone.value.trim();
-    if (!phone) return;
-    // This request silently doing nothing on failure is exactly how a
-    // patient can walk away believing they're linked when they're not -
-    // they see no error, switch to WhatsApp, and their reply lands in a
-    // brand new, unlinked conversation instead of this one. So: disable
-    // the button while in flight (no accidental double-submits), and make
-    // BOTH a server-side error and a network/CORS failure clearly visible
-    // and retryable, instead of failing silently.
+    if (!phone || !activeChatId) return;
     waSend.disabled = true;
     var originalLabel = waSend.textContent;
     waSend.textContent = '…';
     fetch(API_BASE + '/widget-api/link-whatsapp', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ visitorId: visitorId, phone: phone }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ chatId: activeChatId, phone: phone }),
     })
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
       .then(function (data) {
+        if (!data) return;
         if (data.waLink) {
           waForm.classList.remove('open');
-          // Instant feedback rather than waiting up to 4s for the next
-          // poll - syncWaRow() (called from loadMessages()) will also pick
-          // this up on schedule and is what keeps it honest from here on.
-          // Deliberately NOT calling window.open() here: that call happens
-          // async (after this fetch resolves), which most mobile browsers'
-          // popup blockers treat as not user-initiated and silently block -
-          // another way this "worked" but the patient never actually saw
-          // WhatsApp open. The rendered "Open WhatsApp" link below is a
-          // real click the patient makes themselves, so it always works.
+          // Not calling window.open() here - it happens async (after this
+          // fetch resolves), which most mobile browsers' popup blockers
+          // treat as not user-initiated and silently block. The rendered
+          // "Open WhatsApp" link below is a real click the patient makes
+          // themselves, so it always works.
           waLinkedShown = true;
           waRow.innerHTML = '<span>Linked! </span><a href="' + data.waLink + '" target="_blank" rel="noopener">Open WhatsApp</a>';
         } else if (data.error) {
@@ -394,7 +480,154 @@
       });
   });
 
+  // ── Multiple chats per patient ──────────────────────────────────────
+  // "New Chat" starts a fresh, empty thread (e.g. one to book an
+  // appointment, a separate one later for a diagnostic test); the "Chats"
+  // button lists every thread this patient has started so far so they can
+  // switch back to an older one instead of losing track of it.
+
+  function formatChatTime(iso) {
+    try {
+      var d = new Date(iso);
+      var now = new Date();
+      var sameDay = d.toDateString() === now.toDateString();
+      return sameDay
+        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (e) { return ''; }
+  }
+
+  var chatsCache = [];
+  function renderChatsList() {
+    if (!chatsCache.length) {
+      chatsPanel.innerHTML = '<div class="wat-chats-panel-header">Your chats</div><div class="wat-chats-empty">No chats yet — tap "+ New" to start one.</div>';
+      return;
+    }
+    var html = '<div class="wat-chats-panel-header">Your chats</div>';
+    chatsCache.forEach(function (c) {
+      var preview = c.lastMessage ? c.lastMessage : 'No messages yet';
+      html += '<div class="wat-chat-item' + (c.chatId === activeChatId ? ' active' : '') + '" data-chat-id="' + c.chatId + '">' +
+        '<div class="wat-chat-preview">' + preview.replace(/</g, '&lt;') + '</div>' +
+        '<div class="wat-chat-time">' + formatChatTime(c.lastMessageAt) + '</div>' +
+      '</div>';
+    });
+    chatsPanel.innerHTML = html;
+    [].forEach.call(chatsPanel.querySelectorAll('.wat-chat-item'), function (el) {
+      el.addEventListener('click', function () { switchChat(el.getAttribute('data-chat-id')); });
+    });
+  }
+
+  function refreshChatsList() {
+    if (!authToken) return;
+    fetch(API_BASE + '/widget-api/chats', { headers: authHeaders() })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        chatsCache = data.chats || [];
+        renderChatsList();
+      })
+      .catch(function () {});
+  }
+
+  function switchChat(chatId) {
+    if (chatId === activeChatId) { chatsPanel.classList.remove('open'); return; }
+    activeChatId = chatId;
+    renderedCount = 0;
+    waLinkedShown = null;
+    chatsPanel.classList.remove('open');
+    renderChatsList();
+    loadMessages();
+  }
+
+  function startNewChat() {
+    if (!authToken) return;
+    newChatBtn.disabled = true;
+    fetch(API_BASE + '/widget-api/chats', {
+      method: 'POST',
+      headers: authHeaders(),
+    })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data || !data.chatId) return;
+        activeChatId = data.chatId;
+        renderedCount = 0;
+        waLinkedShown = null;
+        render([]);
+        chatsPanel.classList.remove('open');
+        loadMessages();
+        refreshChatsList();
+      })
+      .catch(function () {})
+      .finally(function () { newChatBtn.disabled = false; });
+  }
+
+  newChatBtn.addEventListener('click', startNewChat);
+  chatsToggle.addEventListener('click', function () {
+    chatsPanel.classList.toggle('open');
+    if (chatsPanel.classList.contains('open')) refreshChatsList();
+  });
+
+  // ── Boot ─────────────────────────────────────────────────────────────
+
+  function showChatUI() {
+    authBox.style.display = 'none';
+    body.style.display = 'flex';
+    footer.style.display = 'flex';
+    waRow.style.display = 'flex';
+    chatsToggle.style.display = '';
+    newChatBtn.style.display = '';
+  }
+
+  // After a successful login/signup (or a valid token restored on page
+  // load): show the chat UI, then load this patient's chats - resuming
+  // their most recently active one, or creating their very first chat if
+  // they have none yet.
+  function enterChatUI() {
+    showChatUI();
+    fetch(API_BASE + '/widget-api/chats', { headers: authHeaders() })
+      .then(function (r) {
+        if (r.status === 401) { handleAuthFailure(); return null; }
+        return r.json();
+      })
+      .then(function (data) {
+        if (!data) return;
+        chatsCache = data.chats || [];
+        if (chatsCache.length) {
+          activeChatId = chatsCache[0].chatId; // most recently created/updated - see GET /widget-api/chats ordering
+          renderChatsList();
+          loadMessages();
+        } else {
+          startNewChat();
+        }
+      })
+      .catch(function () {});
+  }
+
+  if (authToken) {
+    // Validate the stored token before committing to the chat UI - it may
+    // have expired since the last visit.
+    fetch(API_BASE + '/widget-api/me', { headers: authHeaders() })
+      .then(function (r) { return r.status === 200 ? r.json() : null; })
+      .then(function (data) {
+        if (data && data.patient) {
+          authPatient = data.patient;
+          enterChatUI();
+        } else {
+          showAuthScreen();
+        }
+      })
+      .catch(function () { showAuthScreen(); });
+  } else {
+    showAuthScreen();
+  }
+
   setInterval(function () {
-    if (panel.classList.contains('open')) loadMessages();
+    if (panel.classList.contains('open') && authToken && activeChatId) loadMessages();
   }, 4000);
 })();

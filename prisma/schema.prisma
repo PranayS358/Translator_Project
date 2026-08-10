@@ -12,13 +12,36 @@ generator client {
   provider = "prisma-client-js"
 }
 
+// A logged-in webchat patient. Signing in is required before a patient can
+// chat at all (see requireAuth in src/auth.js) - this is what makes "one
+// patient, one account, many chats" possible: without an account there's no
+// stable identity to hang multiple Conversation rows off of, since the old
+// anonymous visitorId (still used for channel="webchat" contactKey) was
+// only ever one-per-browser, not one-per-person.
+model Patient {
+  id            String         @id @default(cuid())
+  name          String
+  email         String         @unique
+  passwordHash  String
+  createdAt     DateTime       @default(now())
+  conversations Conversation[]
+}
+
 // One Conversation per real-world contact, per channel. Both inbound and
 // outbound messages attach to the SAME conversation - this is what fixes
 // the "two separate inboxes" issue from v1.
 model Conversation {
   id             String    @id @default(cuid())
   channel        String    // "whatsapp" | "messenger" | "instagram" | "webchat"
-  contactKey     String    // normalized E.164 phone (WhatsApp), PSID/IGSID (Messenger/Instagram), or visitorId (webchat)
+  contactKey     String    // normalized E.164 phone (WhatsApp), PSID/IGSID (Messenger/Instagram), or visitorId/chatId (webchat)
+  // Which logged-in patient this chat belongs to (webchat only - null for
+  // native whatsapp/messenger/instagram conversations, and for older
+  // webchat conversations created before login existed). A patient can have
+  // several of these at once (see POST /widget-api/chats, the widget's "New
+  // Chat" button) - e.g. one to book an appointment, a separate one for a
+  // diagnostic test - each shows up as its own thread in the dashboard.
+  patientId      String?
+  patient        Patient?  @relation(fields: [patientId], references: [id])
   displayName    String?
   favourite      Boolean   @default(false)
   muted          Boolean   @default(false)
