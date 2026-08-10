@@ -74,13 +74,31 @@
     '.wat-wa-form.open{display:flex;}' +
     '.wat-wa-form input{flex:1;border:1px solid #a7f3d0;border-radius:8px;padding:6px 8px;font-size:12px;}' +
     '.wat-wa-form button{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:0 10px;font-size:12px;cursor:pointer;}' +
-    // Auth screen (login/signup) - fills the body area in place of messages
-    // until the patient signs in.
-    '.wat-auth{flex:1;overflow-y:auto;padding:20px 18px;background:#fff;display:flex;flex-direction:column;gap:10px;}' +
-    '.wat-auth h3{margin:0 0 2px;font-size:15px;color:#111827;}' +
-    '.wat-auth p.wat-auth-sub{margin:0 0 8px;font-size:12px;color:#6b7280;}' +
-    '.wat-auth input{border:1px solid #d1d5db;border-radius:8px;padding:9px 12px;font-size:13px;outline:none;}' +
-    '.wat-auth input:focus{border-color:' + ACCENT + ';}' +
+    // Login prompt - shown inside the chat panel in place of messages when
+    // the patient isn't signed in. Just a nudge + button; the actual
+    // login/signup FORM lives in a separate page-level modal (below) so it
+    // can also be opened from the host site's own nav bar, not just from
+    // inside the chat panel.
+    '.wat-login-prompt{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'gap:12px;padding:24px;text-align:center;background:#fff;}' +
+    '.wat-login-prompt p{font-size:13px;color:#4b5563;margin:0;}' +
+    '.wat-login-prompt-btn{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:9px 18px;' +
+    'font-size:13px;font-weight:600;cursor:pointer;}' +
+    // Login/signup modal - a page-level overlay (NOT nested inside the chat
+    // panel), so it can be triggered from the host site's own nav bar login
+    // link as well as from the chat panel's login prompt above.
+    '.wat-modal-backdrop{position:fixed;inset:0;background:rgba(17,24,39,.45);display:none;' +
+    'align-items:center;justify-content:center;z-index:1000000;padding:16px;' +
+    'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
+    '.wat-modal-backdrop.open{display:flex;}' +
+    '.wat-modal-card{background:#fff;border-radius:14px;padding:24px 20px 20px;width:320px;max-width:100%;' +
+    'box-shadow:0 20px 60px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:10px;position:relative;}' +
+    '.wat-modal-close{position:absolute;top:10px;right:12px;background:none;border:none;font-size:20px;' +
+    'color:#9ca3af;cursor:pointer;line-height:1;padding:4px;}' +
+    '.wat-modal-card h3{margin:0 0 2px;font-size:16px;color:#111827;}' +
+    '.wat-modal-card p.wat-auth-sub{margin:0 0 8px;font-size:12px;color:#6b7280;}' +
+    '.wat-modal-card input{border:1px solid #d1d5db;border-radius:8px;padding:10px 12px;font-size:13px;outline:none;}' +
+    '.wat-modal-card input:focus{border-color:' + ACCENT + ';}' +
     '.wat-auth-submit{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;margin-top:4px;}' +
     '.wat-auth-submit:disabled{opacity:.6;cursor:default;}' +
     '.wat-auth-toggle{background:none;border:none;color:' + ACCENT + ';font-size:12px;cursor:pointer;text-decoration:underline;padding:0;margin-top:2px;align-self:flex-start;}' +
@@ -124,7 +142,10 @@
         '<button class="wat-close" aria-label="Close">✕</button>' +
       '</span>' +
     '</div>' +
-    '<div class="wat-auth" style="display:none"></div>' +
+    '<div class="wat-login-prompt" style="display:none">' +
+      '<p>Please log in to start chatting and book appointments or other services.</p>' +
+      '<button class="wat-login-prompt-btn">Log In</button>' +
+    '</div>' +
     '<div class="wat-chats-panel"></div>' +
     '<div class="wat-body" style="display:none"></div>' +
     '<div class="wat-wa-row" style="display:none">' +
@@ -141,11 +162,24 @@
       '<button class="wat-send">Send</button>' +
     '</div>';
 
+  // Login/signup modal - deliberately a sibling of the bubble/panel, not
+  // nested inside either, so it can be opened from the host site's own nav
+  // bar (see window.watAuth.open below) independent of whether the chat
+  // panel is even open.
+  var modalBackdrop = document.createElement('div');
+  modalBackdrop.className = 'wat-modal-backdrop';
+  modalBackdrop.innerHTML =
+    '<div class="wat-modal-card">' +
+      '<button class="wat-modal-close" aria-label="Close">✕</button>' +
+      '<div class="wat-modal-body"></div>' +
+    '</div>';
+
   document.body.appendChild(bubble);
   document.body.appendChild(panel);
+  document.body.appendChild(modalBackdrop);
 
   var langSelect = panel.querySelector('.wat-lang-select');
-  var authBox = panel.querySelector('.wat-auth');
+  var loginPrompt = panel.querySelector('.wat-login-prompt');
   var chatsPanel = panel.querySelector('.wat-chats-panel');
   var chatsToggle = panel.querySelector('.wat-chats-toggle');
   var newChatBtn = panel.querySelector('.wat-new-chat');
@@ -179,12 +213,16 @@
     panel.classList.remove('open');
   });
 
-  // ── Auth screen ──────────────────────────────────────────────────────
+  // ── Login/signup modal ──────────────────────────────────────────────
+  // Page-level, not nested in the chat panel - opened either from the
+  // panel's own "Log In" prompt or from the host site's nav bar via
+  // window.watAuth.open() (see the "Public API" section near the bottom).
+  var modalBody = modalBackdrop.querySelector('.wat-modal-body');
   var authMode = 'login'; // 'login' | 'signup'
 
-  function renderAuthScreen() {
+  function renderAuthModal() {
     var isLogin = authMode === 'login';
-    authBox.innerHTML =
+    modalBody.innerHTML =
       '<h3>' + (isLogin ? 'Log in to chat' : 'Create your account') + '</h3>' +
       '<p class="wat-auth-sub">' + (isLogin
         ? 'Sign in to start chatting and book appointments or other services.'
@@ -198,34 +236,49 @@
         ? "Don't have an account? Sign up"
         : 'Already have an account? Log in') + '</button>';
 
-    authBox.querySelector('.wat-auth-toggle').addEventListener('click', function () {
+    modalBody.querySelector('.wat-auth-toggle').addEventListener('click', function () {
       authMode = isLogin ? 'signup' : 'login';
-      renderAuthScreen();
+      renderAuthModal();
     });
-    authBox.querySelector('.wat-auth-submit').addEventListener('click', submitAuthForm);
-    [].forEach.call(authBox.querySelectorAll('input'), function (el) {
+    modalBody.querySelector('.wat-auth-submit').addEventListener('click', submitAuthForm);
+    [].forEach.call(modalBody.querySelectorAll('input'), function (el) {
       el.addEventListener('keydown', function (e) { if (e.key === 'Enter') submitAuthForm(); });
     });
   }
 
   function showAuthError(message) {
-    var el = authBox.querySelector('.wat-auth-error');
+    var el = modalBody.querySelector('.wat-auth-error');
     el.textContent = message;
     el.classList.add('show');
   }
 
+  function openAuthModal(mode) {
+    authMode = mode === 'signup' ? 'signup' : 'login';
+    renderAuthModal();
+    modalBackdrop.classList.add('open');
+  }
+
+  function closeAuthModal() {
+    modalBackdrop.classList.remove('open');
+  }
+
+  modalBackdrop.querySelector('.wat-modal-close').addEventListener('click', closeAuthModal);
+  modalBackdrop.addEventListener('click', function (e) {
+    if (e.target === modalBackdrop) closeAuthModal(); // click on the dimmed backdrop itself, not the card
+  });
+
   function submitAuthForm() {
     var isLogin = authMode === 'login';
-    var email = authBox.querySelector('.wat-auth-email').value.trim();
-    var password = authBox.querySelector('.wat-auth-password').value;
-    var name = !isLogin ? authBox.querySelector('.wat-auth-name').value.trim() : undefined;
+    var email = modalBody.querySelector('.wat-auth-email').value.trim();
+    var password = modalBody.querySelector('.wat-auth-password').value;
+    var name = !isLogin ? modalBody.querySelector('.wat-auth-name').value.trim() : undefined;
 
     if (!email || !password || (!isLogin && !name)) {
       showAuthError('Please fill in all fields.');
       return;
     }
 
-    var submitBtn = authBox.querySelector('.wat-auth-submit');
+    var submitBtn = modalBody.querySelector('.wat-auth-submit');
     submitBtn.disabled = true;
     var originalLabel = submitBtn.textContent;
     submitBtn.textContent = '…';
@@ -241,6 +294,8 @@
           authToken = res.data.token;
           authPatient = res.data.patient;
           localStorage.setItem(TOKEN_KEY, authToken);
+          closeAuthModal();
+          onAuthChanged(true);
           enterChatUI();
         } else {
           showAuthError(res.data.error || 'Something went wrong - please try again.');
@@ -255,14 +310,34 @@
       });
   }
 
-  function showAuthScreen() {
+  loginPrompt.querySelector('.wat-login-prompt-btn').addEventListener('click', function () {
+    openAuthModal('login');
+  });
+
+  // Lets the host page (e.g. a nav bar "Log In" link/account menu) react to
+  // sign-in/sign-out without needing to know anything about the chat
+  // widget's internals - see window.watAuth below for what dispatches this.
+  function onAuthChanged(loggedIn) {
+    window.dispatchEvent(new CustomEvent('wat:auth', {
+      detail: { loggedIn: loggedIn, patient: loggedIn ? authPatient : null },
+    }));
+  }
+
+  // Resets to a signed-out state: clears the stored token, shows the chat
+  // panel's login prompt in place of the chat, and tells the host page (via
+  // wat:auth) so its own nav UI can update too. Used both for an explicit
+  // logout and for an expired/invalid token discovered mid-session.
+  function resetToLoggedOut() {
     authToken = null;
     authPatient = null;
     activeChatId = null;
     localStorage.removeItem(TOKEN_KEY);
-    authMode = 'login';
-    renderAuthScreen();
-    authBox.style.display = 'flex';
+    showLoginPromptUI();
+    onAuthChanged(false);
+  }
+
+  function showLoginPromptUI() {
+    loginPrompt.style.display = 'flex';
     chatsPanel.classList.remove('open');
     body.style.display = 'none';
     footer.style.display = 'none';
@@ -362,9 +437,9 @@
 
   // Handles an expired/invalid token showing up mid-session (e.g. the JWT's
   // 30-day expiry lapses while the tab's been open) - bounce back to the
-  // auth screen instead of silently failing every request from here on.
+  // login prompt instead of silently failing every request from here on.
   function handleAuthFailure() {
-    showAuthScreen();
+    resetToLoggedOut();
   }
 
   function loadMessages() {
@@ -583,7 +658,7 @@
   // ── Boot ─────────────────────────────────────────────────────────────
 
   function showChatUI() {
-    authBox.style.display = 'none';
+    loginPrompt.style.display = 'none';
     body.style.display = 'flex';
     footer.style.display = 'flex';
     waRow.style.display = 'flex';
@@ -616,22 +691,39 @@
       .catch(function () {});
   }
 
+  // ── Public API ───────────────────────────────────────────────────────
+  // Lets the host page wire up its own "Log In" nav link/account menu
+  // instead of the chat widget owning that UI itself - see
+  // healthcare-demo-site/index.html for the reference nav bar integration.
+  window.watAuth = {
+    open: openAuthModal, // window.watAuth.open('login') or window.watAuth.open('signup')
+    logout: function () { resetToLoggedOut(); },
+    isLoggedIn: function () { return !!authToken; },
+    getPatient: function () { return authPatient; },
+  };
+
+  loginPrompt.style.display = 'flex'; // default panel state until the token check below (if any) resolves
+
   if (authToken) {
     // Validate the stored token before committing to the chat UI - it may
-    // have expired since the last visit.
+    // have expired since the last visit. Optimistically tell the host page
+    // "logged in" right away (a token being present is a good enough
+    // signal for e.g. a nav bar to avoid a login-link flash), then correct
+    // that via handleAuthFailure()'s wat:auth(false) dispatch if the token
+    // turns out to be stale.
+    onAuthChanged(true);
     fetch(API_BASE + '/widget-api/me', { headers: authHeaders() })
       .then(function (r) { return r.status === 200 ? r.json() : null; })
       .then(function (data) {
         if (data && data.patient) {
           authPatient = data.patient;
+          onAuthChanged(true);
           enterChatUI();
         } else {
-          showAuthScreen();
+          resetToLoggedOut();
         }
       })
-      .catch(function () { showAuthScreen(); });
-  } else {
-    showAuthScreen();
+      .catch(function () { resetToLoggedOut(); });
   }
 
   setInterval(function () {
