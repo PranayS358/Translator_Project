@@ -173,7 +173,7 @@
       '<button class="wat-login-warning-btn">Log In</button>' +
       '<button class="wat-login-warning-close" aria-label="Dismiss">✕</button>' +
     '</div>' +
-    '<div class="wat-wa-row" style="display:none">' +
+    '<div class="wat-wa-row">' +
       '<span>Prefer WhatsApp?</span>' +
       '<button class="wat-wa-toggle">Continue there</button>' +
     '</div>' +
