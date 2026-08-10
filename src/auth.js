@@ -60,4 +60,19 @@ function requireAuth(req, res, next) {
   next();
 }
 
-module.exports = { hashPassword, verifyPassword, signPatientToken, verifyPatientToken, requireAuth };
+// Like requireAuth, but never blocks the request - just attaches
+// req.patient if a valid token happens to be present, and moves on either
+// way. Used on the actual chat routes now that signing in is optional for
+// chatting itself (only booking an appointment/test requires an account -
+// see the patientId check in src/autoReply.js): an anonymous visitor and a
+// logged-in patient hit the exact same endpoints, the only difference is
+// whether req.patient ends up set.
+function optionalAuth(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
+  const patient = token && verifyPatientToken(token);
+  if (patient) req.patient = patient;
+  next();
+}
+
+module.exports = { hashPassword, verifyPassword, signPatientToken, verifyPatientToken, requireAuth, optionalAuth };

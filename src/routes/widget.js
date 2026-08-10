@@ -1,11 +1,16 @@
 // Public API for the embeddable website chat widget (public/widget-embed/
 // chat-widget.js). Deliberately separate from the x-api-key-protected /api
 // router below, since real website visitors on a client's site (e.g. the
-// demo healthcare site) have no way to hold that key - patient identity
-// here is instead a per-patient JWT issued by /signup or /login (see
-// src/auth.js), required on every route except those two plus OPTIONS
-// preflight. CORS is wide open on purpose - this router needs to work from
-// any client site the widget is embedded on, not just this same origin.
+// demo healthcare site) have no way to hold that key. Chatting itself never
+// requires an account - a visitor gets a persistent chatId the moment they
+// open the widget, same as before patient accounts existed. Logging in
+// (email + password, see src/auth.js) is optional and only actually
+// required to CONFIRM a booking (see the loggedIn check in
+// src/autoReply.js) - every chat route below uses optionalAuth, which
+// attaches req.patient when a valid token is present but never blocks the
+// request when it isn't. CORS is wide open on purpose - this router needs
+// to work from any client site the widget is embedded on, not just this
+// same origin.
 const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
@@ -14,7 +19,7 @@ const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { addMessage, toPublicMessages } = require('../conversations');
 const { runAutoReply } = require('../autoReply');
-const { hashPassword, verifyPassword, signPatientToken, requireAuth } = require('../auth');
+const { hashPassword, verifyPassword, signPatientToken, requireAuth, optionalAuth } = require('../auth');
 const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
@@ -30,26 +35,48 @@ async function getPrimaryLanguage() {
   return settings.primaryLanguage;
 }
 
-// Looks up a chat by id and 404s/403s if it doesn't exist or belongs to
-// someone else - every authenticated route below that touches a specific
-// chat runs this first instead of trusting the chatId on its own. A cuid
-// is effectively unguessable, but ownership should never rest on that
-// alone.
-async function loadOwnedChat(chatId, patientId) {
-  const conversation = await prisma.conversation.findUnique({
+// Finds (or creates) the webchat conversation for this chatId. If the
+// caller is logged in (req.patient set by optionalAuth) and the chat isn't
+// already claimed by anyone, this also claims it for them right here -
+// which is what makes "chat anonymously, then log in mid-conversation"
+// work without losing the thread: the very next message after logging in
+// silently attaches it to their account. (POST /chats/claim below does the
+// same thing explicitly, for the moment right after login before any
+// further message has been sent.)
+async function getOrClaimChat(chatId, patient) {
+  let conversation = await prisma.conversation.findUnique({
     where: { channel_contactKey: { channel: 'webchat', contactKey: chatId } },
   });
-  if (!conversation || conversation.patientId !== patientId) return null;
+
+  if (!conversation) {
+    return prisma.conversation.create({
+      data: {
+        channel: 'webchat',
+        contactKey: chatId,
+        patientId: patient ? patient.id : null,
+        displayName: patient ? patient.name : null,
+      },
+    });
+  }
+
+  if (patient && !conversation.patientId) {
+    conversation = await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { patientId: patient.id, displayName: conversation.displayName || patient.name },
+    });
+  }
+
   return conversation;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ── Patient accounts ───────────────────────────────────────────────────
-// Sign-in is required before a patient can chat at all - see requireAuth
-// on every route below this point. That's also what makes booking an
-// appointment or any other service require an account: there's no way to
-// reach the booking flow without first reaching the chat itself.
+// Optional - a patient can chat freely without ever signing up. Logging in
+// only actually matters the moment they try to confirm an appointment or
+// test booking (see src/autoReply.js), at which point the widget prompts
+// them to log in via the host site's own nav bar (see window.watAuth in
+// chat-widget.js) rather than anything inside the chat panel itself.
 
 router.post('/signup', asyncHandler(async (req, res) => {
   const { name, email, password } = req.body || {};
@@ -82,15 +109,45 @@ router.post('/login', asyncHandler(async (req, res) => {
   res.json({ token, patient: { id: patient.id, name: patient.name, email: patient.email } });
 }));
 
-// Lets the widget restore a session on page load from a token it already
-// has in localStorage, instead of asking the patient to log in every visit.
+// Lets the widget/nav bar restore a session on page load from a token
+// already in localStorage, instead of asking the patient to log in every
+// visit.
 router.get('/me', requireAuth, (req, res) => {
   res.json({ patient: req.patient });
 });
 
+// Attaches the currently active anonymous chat to the just-logged-in
+// patient, right at the moment they log in (before they've necessarily
+// sent another message - getOrClaimChat above handles the "they log in,
+// then keep chatting" case, but not "they log in and don't type anything
+// else"). No-ops (still succeeds) if the chat is already theirs; 409s if
+// it's already claimed by a different patient.
+router.post('/chats/claim', requireAuth, asyncHandler(async (req, res) => {
+  const { chatId } = req.body || {};
+  if (!chatId) return res.status(400).json({ error: 'chatId is required' });
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { channel_contactKey: { channel: 'webchat', contactKey: chatId } },
+  });
+  if (!conversation) return res.status(404).json({ error: 'Chat not found' });
+  if (conversation.patientId && conversation.patientId !== req.patient.id) {
+    return res.status(409).json({ error: 'This chat is already linked to a different account' });
+  }
+
+  if (!conversation.patientId) {
+    await prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { patientId: req.patient.id, displayName: conversation.displayName || req.patient.name },
+    });
+  }
+
+  res.json({ claimed: true });
+}));
+
 // Lists every chat this patient has started, most recent first, with a
 // one-line preview of the last message - the widget's chat-switcher reads
-// this to build its list.
+// this to build its list. Logged-in only: an anonymous visitor has exactly
+// one chat (their local chatId) and never sees this UI.
 router.get('/chats', requireAuth, asyncHandler(async (req, res) => {
   const conversations = await prisma.conversation.findMany({
     where: { patientId: req.patient.id, channel: 'webchat' },
@@ -115,6 +172,7 @@ router.get('/chats', requireAuth, asyncHandler(async (req, res) => {
 // Starts a brand new, empty chat thread for this patient (the widget's
 // "New Chat" button) - e.g. one thread to book an appointment, a separate
 // one later for a diagnostic test, all listed together under GET /chats.
+// Logged-in only, same reasoning as GET /chats above.
 router.post('/chats', requireAuth, asyncHandler(async (req, res) => {
   const chatId = crypto.randomUUID();
   const conversation = await prisma.conversation.create({
@@ -123,13 +181,15 @@ router.post('/chats', requireAuth, asyncHandler(async (req, res) => {
   res.status(201).json({ chatId: conversation.contactKey, createdAt: conversation.createdAt });
 }));
 
-// ── Chatting ────────────────────────────────────────────────────────────
+// ── Chatting (no login required) ────────────────────────────────────────
 
-// A patient sends a message from the widget, into one of their own chats
-// (see POST /chats above - chatId must already exist and belong to them).
-// Figures out (or reuses) the chat's locked-in language, translates into
-// the site's configured primary language, and returns the saved
-// (translated) message.
+// A visitor sends a message from the widget. Figures out (or reuses) the
+// chat's locked-in language, translates into the site's configured primary
+// language, and returns the saved (translated) message - plus
+// requiresLogin: true the moment the bot needed to confirm a booking but
+// this chat isn't attached to a logged-in patient yet (see
+// src/autoReply.js), so the widget can prompt them to log in via the nav
+// bar instead of losing the request silently.
 //
 // Language handling, in priority order:
 //   1. An explicit `language` in the request - only sent when the patient
@@ -143,14 +203,13 @@ router.post('/chats', requireAuth, asyncHandler(async (req, res) => {
 //      (via detectAndTranslate in src/translate.js) since that's what
 //      actually recognizes Hinglish and other script-ambiguous text; falls
 //      back to franc when Google isn't configured.
-router.post('/message', requireAuth, asyncHandler(async (req, res) => {
+router.post('/message', optionalAuth, asyncHandler(async (req, res) => {
   const { chatId, text, language } = req.body || {};
   if (!chatId || !text || !text.trim()) {
     return res.status(400).json({ error: 'chatId and text are required' });
   }
 
-  let conversation = await loadOwnedChat(chatId, req.patient.id);
-  if (!conversation) return res.status(404).json({ error: 'Chat not found - start a new one first.' });
+  let conversation = await getOrClaimChat(chatId, req.patient);
 
   const primaryLanguage = await getPrimaryLanguage();
 
@@ -196,25 +255,24 @@ router.post('/message', requireAuth, asyncHandler(async (req, res) => {
   // patient's message so the reply is already saved by the time the
   // widget's next poll (~4s) comes around. Also delivers over WhatsApp too
   // when this chat is linked (see runAutoReply in autoReply.js).
-  await runAutoReply(conversation, primaryLanguage, customerLanguage);
+  const autoResult = await runAutoReply(conversation, primaryLanguage, customerLanguage);
 
-  res.json({ message: saved, detectedLanguage: customerLanguage });
+  res.json({ message: saved, detectedLanguage: customerLanguage, requiresLogin: !!autoResult?.requiresLogin });
 }));
 
-// A patient shares their current GPS location (the widget's "Share my
+// A visitor shares their current GPS location (the widget's "Share my
 // location" button - see chat-widget.js) — most useful mid-way through the
 // ambulance/emergency flow, but works standalone too (e.g. "which branch is
 // closest to me"). Stored the same shape as every other location message
 // (see extractIncoming in webhook.js and the dashboard's own location send
 // in api.js) so it renders identically everywhere.
-router.post('/location', requireAuth, asyncHandler(async (req, res) => {
+router.post('/location', optionalAuth, asyncHandler(async (req, res) => {
   const { chatId, latitude, longitude } = req.body || {};
   if (!chatId || typeof latitude !== 'number' || typeof longitude !== 'number') {
     return res.status(400).json({ error: 'chatId, latitude, and longitude (numbers) are required' });
   }
 
-  const conversation = await loadOwnedChat(chatId, req.patient.id);
-  if (!conversation) return res.status(404).json({ error: 'Chat not found - start a new one first.' });
+  const conversation = await getOrClaimChat(chatId, req.patient);
 
   const primaryLanguage = await getPrimaryLanguage();
 
@@ -232,19 +290,21 @@ router.post('/location', requireAuth, asyncHandler(async (req, res) => {
     await prisma.conversation.update({ where: { id: conversation.id }, data: { unreadCount: { increment: 1 } } });
   }
 
-  await runAutoReply(conversation, primaryLanguage, conversation.customerLanguage || 'en');
+  const autoResult = await runAutoReply(conversation, primaryLanguage, conversation.customerLanguage || 'en');
 
-  res.json({ message: saved });
+  res.json({ message: saved, requiresLogin: !!autoResult?.requiresLogin });
 }));
 
 // The widget polls this to render one chat's full thread, including the
 // agent's/bot's replies (translated back into the patient's own language).
-router.get('/messages', requireAuth, asyncHandler(async (req, res) => {
+router.get('/messages', optionalAuth, asyncHandler(async (req, res) => {
   const { chatId } = req.query;
   if (!chatId) return res.status(400).json({ error: 'chatId is required' });
 
-  const conversation = await loadOwnedChat(chatId, req.patient.id);
-  if (!conversation) return res.status(404).json({ error: 'Chat not found' });
+  const conversation = await prisma.conversation.findUnique({
+    where: { channel_contactKey: { channel: 'webchat', contactKey: chatId } },
+  });
+  if (!conversation) return res.json({ messages: [], linkedWhatsapp: null, waLink: null });
 
   const messages = await prisma.message.findMany({
     where: { conversationId: conversation.id },
@@ -272,7 +332,9 @@ router.get('/messages', requireAuth, asyncHandler(async (req, res) => {
 // message the business's WhatsApp number, webhook.js recognizes the number
 // and merges it into this SAME chat instead of starting a new one. Returns
 // the business's WhatsApp number so the widget can build a wa.me deep link.
-router.post('/link-whatsapp', requireAuth, asyncHandler(async (req, res) => {
+// Doesn't require login - works the same for an anonymous visitor as for a
+// signed-in patient.
+router.post('/link-whatsapp', optionalAuth, asyncHandler(async (req, res) => {
   const { chatId, phone } = req.body || {};
   if (!chatId || !phone) return res.status(400).json({ error: 'chatId and phone are required' });
 
@@ -281,9 +343,7 @@ router.post('/link-whatsapp', requireAuth, asyncHandler(async (req, res) => {
     return res.status(503).json({ error: 'WhatsApp bridging is not configured on this server yet' });
   }
 
-  const conversation = await loadOwnedChat(chatId, req.patient.id);
-  if (!conversation) return res.status(404).json({ error: 'Chat not found - start a new one first.' });
-
+  const conversation = await getOrClaimChat(chatId, req.patient);
   const normalized = normalizePhone(phone);
 
   // A phone number can only be linked to one chat at a time - drop any

@@ -223,7 +223,7 @@ function nearestBranch(lat, lng) {
   return { ...best, distanceKm: Math.round(bestDistanceKm * 10) / 10 };
 }
 
-function systemPrompt(clinicInfo) {
+function systemPrompt(clinicInfo, loggedIn) {
   const roster = getDoctorRoster();
   const testCatalog = getTestCatalog();
   const slots = nextAvailableSlots();
@@ -246,13 +246,19 @@ Appointment booking flow — when a patient wants to book an appointment WITH A 
 2. Once they name a department, share 2-3 doctors for that department from the directory above and ask them to pick one. For EACH doctor you name, always state their degree, years of experience, and appointment fee exactly as listed (e.g. "Dr. X — MBBS, MD; 10 yrs experience; ₹500 per visit") — never just the name alone.
 3. If they say they're unsure or have no preference, recommend the doctor marked "(most popular)" in that department — again including their degree, experience, and fee — and ask if that works for them.
 4. Only after a doctor is chosen (by name, or by accepting your recommendation), offer 2-3 slot options for that department from "Upcoming available slots" above, using the human-readable label only.
-5. Once they pick a slot, do NOT say the appointment is booked or confirmed. Say you've noted their request (doctor, department, day/time) and that the front desk will confirm it shortly — matching the booking rule below. Then, on its own new line, add this marker using the department name and doctor name exactly as listed above, and the ISO timestamp of the chosen slot: [[APPT|department=<department>|doctor=<doctor>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
+5. Once they pick a slot, do NOT say the appointment is booked or confirmed. ${loggedIn
+    ? 'Say you\'ve noted their request (doctor, department, day/time) and that the front desk will confirm it shortly — matching the booking rule below.'
+    : 'The patient is NOT logged in yet, so tell them (briefly, warmly) that they\'ll need to log in first using the "Login / Signup" button at the top of the page before this request can be finalized — say their details are noted for now and they should confirm again once logged in.'
+  } Then, on its own new line, add this marker using the department name and doctor name exactly as listed above, and the ISO timestamp of the chosen slot: [[APPT|department=<department>|doctor=<doctor>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
 
 Test booking flow — when a patient wants to book a TEST (e.g. "book a test", "I need an X-ray", "blood test", "lab work") rather than see a doctor, use this separate sequence instead of the appointment flow above, one step per message (don't skip ahead or combine steps):
 1. Ask which department/type of test they need, if they haven't said already, and mention the department options from the test catalog above (Radiology, Pathology / Lab Tests, Cardiology Diagnostics).
 2. Once they name a department, list the available tests in that department from the catalog above, each with its cost exactly as listed (e.g. "Chest X-Ray — ₹800"), and ask them to pick one.
 3. Once a test is chosen, offer 2-3 slot options from "Upcoming available slots" above, using the human-readable label only.
-4. Once they pick a slot, do NOT say the test is booked or confirmed. Say you've noted their request (test, department, cost, day/time) and that the lab/front desk will confirm it shortly. Then, on its own new line, add this marker using the department and test name exactly as listed above, the test's fee, and the ISO timestamp of the chosen slot: [[TESTBOOK|department=<department>|test=<test>|fee=<fee>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
+4. Once they pick a slot, do NOT say the test is booked or confirmed. ${loggedIn
+    ? 'Say you\'ve noted their request (test, department, cost, day/time) and that the lab/front desk will confirm it shortly.'
+    : 'The patient is NOT logged in yet, so tell them (briefly, warmly) that they\'ll need to log in first using the "Login / Signup" button at the top of the page before this request can be finalized — say their details are noted for now and they should confirm again once logged in.'
+  } Then, on its own new line, add this marker using the department and test name exactly as listed above, the test's fee, and the ISO timestamp of the chosen slot: [[TESTBOOK|department=<department>|test=<test>|fee=<fee>|when=<ISO>]] — invisible to the patient (stripped before sending), only for the clinic's own scheduling. Include it only once, in this same message.
 
 Symptom-based routing — if a patient describes a physical complaint or symptom (e.g. "my tooth hurts", "I have a skin rash", "my child has a fever", "chest tightness") without naming a department, and it does NOT sound like the emergency flow below, suggest the single closest-matching department from the directory above and offer to continue the booking flow with it (starting at step 2). This is routing only, never diagnosis — don't say what you think is wrong with them, only which department handles that kind of concern.
 
@@ -307,12 +313,19 @@ Rules:
  *                                                 test booking request was
  *                                                 noted, else null.
  */
-async function getAutoReply(history) {
+async function getAutoReply(history, options) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) return null;
 
+  // loggedIn defaults to true (normal "noted, front desk will confirm"
+  // phrasing) unless the caller explicitly says otherwise - only
+  // src/autoReply.js's webchat path ever passes loggedIn: false (an
+  // anonymous website visitor mid-booking), so every other caller (native
+  // WhatsApp, a claimed webchat conversation) behaves exactly as before.
+  const loggedIn = !options || options.loggedIn !== false;
+
   const clinicInfo = process.env.CLINIC_INFO || DEFAULT_CLINIC_INFO;
-  const messages = [{ role: 'system', content: systemPrompt(clinicInfo) }, ...history];
+  const messages = [{ role: 'system', content: systemPrompt(clinicInfo, loggedIn) }, ...history];
 
   let reply;
   try {

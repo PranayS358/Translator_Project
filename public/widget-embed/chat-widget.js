@@ -7,13 +7,19 @@
  *           data-title="Chat with us"
  *           data-color="#0f766e"></script>
  *
- * Patients sign up / log in before they can chat (see the auth screen
- * below) - that's what lets one patient have several separate chats (one
- * per booking, say) all listed together, and what makes booking an
- * appointment or any other service require an account. The patient types
- * in whatever language they pick; the site's agent always sees/replies in
- * the primary language configured in the translator dashboard's Settings.
- * Everything is translated both ways automatically.
+ * Chatting never requires an account - a visitor gets a persistent chat the
+ * moment they open the widget, same as any live-chat bubble. Logging in
+ * (email + password) is optional, and the widget never asks for it itself -
+ * that's the host site's job (see window.watAuth below, and
+ * healthcare-demo-site/index.html for a reference nav bar "Log In" button).
+ * The one place login actually matters is confirming a booking: if the bot
+ * tries to finalize an appointment or test booking on a chat that isn't
+ * tied to a logged-in patient, the widget shows a dismissible banner
+ * prompting them to log in (via the same modal the nav bar opens) instead
+ * of losing the request. The patient types in whatever language they pick;
+ * the site's agent always sees/replies in the primary language configured
+ * in the translator dashboard's Settings. Everything is translated both
+ * ways automatically.
  */
 (function () {
   var THIS_SCRIPT = document.currentScript;
@@ -29,10 +35,28 @@
     ['ur', 'Urdu'], ['bn', 'Bengali'], ['id', 'Indonesian'],
   ];
 
+  function uid() {
+    if (window.crypto && window.crypto.randomUUID) return window.crypto.randomUUID();
+    return 'v-' + Date.now() + '-' + Math.random().toString(16).slice(2);
+  }
+
   var TOKEN_KEY = 'wat_patient_token';
+  var CHAT_ID_KEY = 'wat_chat_id';
   var authToken = localStorage.getItem(TOKEN_KEY) || null;
-  var authPatient = null; // { id, name, email } - set once /me or /login or /signup succeeds
-  var activeChatId = null; // current chat's contactKey - null until a chat is loaded/created
+  var authPatient = null; // { id, name, email } - set once /me, /login, or /signup succeeds
+
+  // The chat is anonymous by default and persists across visits the same
+  // way it always did before patient accounts existed - a chatId in
+  // localStorage. Logging in later doesn't replace this; it CLAIMS this
+  // same chat for the patient's account (see afterLogin() below and
+  // getOrClaimChat() server-side), so nothing about the conversation so
+  // far is lost.
+  var activeChatId = localStorage.getItem(CHAT_ID_KEY);
+  if (!activeChatId) {
+    activeChatId = uid();
+    localStorage.setItem(CHAT_ID_KEY, activeChatId);
+  }
+
   var visitorLanguage = localStorage.getItem('wat_visitor_language') || '';
 
   function authHeaders() {
@@ -74,19 +98,22 @@
     '.wat-wa-form.open{display:flex;}' +
     '.wat-wa-form input{flex:1;border:1px solid #a7f3d0;border-radius:8px;padding:6px 8px;font-size:12px;}' +
     '.wat-wa-form button{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:0 10px;font-size:12px;cursor:pointer;}' +
-    // Login prompt - shown inside the chat panel in place of messages when
-    // the patient isn't signed in. Just a nudge + button; the actual
-    // login/signup FORM lives in a separate page-level modal (below) so it
-    // can also be opened from the host site's own nav bar, not just from
-    // inside the chat panel.
-    '.wat-login-prompt{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
-    'gap:12px;padding:24px;text-align:center;background:#fff;}' +
-    '.wat-login-prompt p{font-size:13px;color:#4b5563;margin:0;}' +
-    '.wat-login-prompt-btn{background:' + ACCENT + ';color:#fff;border:none;border-radius:8px;padding:9px 18px;' +
-    'font-size:13px;font-weight:600;cursor:pointer;}' +
+    // Login-required warning - a dismissible banner (not a blocking screen)
+    // shown the moment the bot needed to confirm a booking but this chat
+    // isn't tied to a logged-in patient yet (see requiresLogin in the
+    // /message and /location responses). Patient can close it with the ✕
+    // and keep chatting, or tap Log In to open the same modal the host
+    // site's nav bar uses.
+    '.wat-login-warning{padding:8px 12px;background:#fffbeb;border-top:1px solid #fde68a;font-size:11px;' +
+    'color:#92400e;display:none;align-items:center;gap:8px;}' +
+    '.wat-login-warning.show{display:flex;}' +
+    '.wat-login-warning-text{flex:1;}' +
+    '.wat-login-warning button{font-size:11px;font-weight:600;border:none;cursor:pointer;background:none;padding:0;color:#92400e;flex-shrink:0;}' +
+    '.wat-login-warning-btn{text-decoration:underline;}' +
+    '.wat-login-warning-close{font-size:14px;line-height:1;padding:0 2px!important;}' +
     // Login/signup modal - a page-level overlay (NOT nested inside the chat
-    // panel), so it can be triggered from the host site's own nav bar login
-    // link as well as from the chat panel's login prompt above.
+    // panel), opened from the host site's own nav bar (see window.watAuth
+    // below) or from the login-required banner above.
     '.wat-modal-backdrop{position:fixed;inset:0;background:rgba(17,24,39,.45);display:none;' +
     'align-items:center;justify-content:center;z-index:1000000;padding:16px;' +
     'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;}' +
@@ -104,7 +131,8 @@
     '.wat-auth-toggle{background:none;border:none;color:' + ACCENT + ';font-size:12px;cursor:pointer;text-decoration:underline;padding:0;margin-top:2px;align-self:flex-start;}' +
     '.wat-auth-error{color:#b91c1c;font-size:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px 8px;display:none;}' +
     '.wat-auth-error.show{display:block;}' +
-    // Chat list overlay - toggled by the "Chats" header button
+    // Chat list overlay - toggled by the "Chats" header button (logged-in
+    // patients only - see showChatsUI()/hideChatsUI() below)
     '.wat-chats-panel{position:absolute;top:52px;left:0;right:0;bottom:0;background:#fff;z-index:5;display:none;flex-direction:column;overflow-y:auto;}' +
     '.wat-chats-panel.open{display:flex;}' +
     '.wat-chats-panel-header{padding:10px 14px;font-size:12px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.03em;border-bottom:1px solid #f0f0f0;}' +
@@ -127,11 +155,7 @@
   // No inline position here - the .wat-panel CSS class already sets
   // position:fixed (floating bottom-right), which on its own already
   // establishes the containing block the absolutely-positioned
-  // .wat-chats-panel overlay needs. Setting position:relative here as an
-  // inline style used to override that fixed positioning entirely (inline
-  // styles beat class rules) and silently broke the whole panel - it was
-  // still in the DOM and "open", just laid out in normal document flow
-  // instead of floating over the page, so nobody could see it.
+  // .wat-chats-panel overlay needs.
   panel.innerHTML =
     '<div class="wat-header">' +
       '<span class="wat-title">' + TITLE + '</span>' +
@@ -142,12 +166,13 @@
         '<button class="wat-close" aria-label="Close">✕</button>' +
       '</span>' +
     '</div>' +
-    '<div class="wat-login-prompt" style="display:none">' +
-      '<p>Please log in to start chatting and book appointments or other services.</p>' +
-      '<button class="wat-login-prompt-btn">Log In</button>' +
-    '</div>' +
     '<div class="wat-chats-panel"></div>' +
-    '<div class="wat-body" style="display:none"></div>' +
+    '<div class="wat-body"></div>' +
+    '<div class="wat-login-warning">' +
+      '<span class="wat-login-warning-text">Please log in to confirm this booking.</span>' +
+      '<button class="wat-login-warning-btn">Log In</button>' +
+      '<button class="wat-login-warning-close" aria-label="Dismiss">✕</button>' +
+    '</div>' +
     '<div class="wat-wa-row" style="display:none">' +
       '<span>Prefer WhatsApp?</span>' +
       '<button class="wat-wa-toggle">Continue there</button>' +
@@ -156,7 +181,7 @@
       '<input class="wat-wa-phone" placeholder="Your WhatsApp number, e.g. 9198xxxxxxx" />' +
       '<button class="wat-wa-send">Link</button>' +
     '</div>' +
-    '<div class="wat-footer" style="display:none">' +
+    '<div class="wat-footer">' +
       '<button class="wat-loc-btn" type="button" title="Share my current location" aria-label="Share my current location">📍</button>' +
       '<input class="wat-input" placeholder="Type a message…" />' +
       '<button class="wat-send">Send</button>' +
@@ -179,12 +204,11 @@
   document.body.appendChild(modalBackdrop);
 
   var langSelect = panel.querySelector('.wat-lang-select');
-  var loginPrompt = panel.querySelector('.wat-login-prompt');
   var chatsPanel = panel.querySelector('.wat-chats-panel');
   var chatsToggle = panel.querySelector('.wat-chats-toggle');
   var newChatBtn = panel.querySelector('.wat-new-chat');
   var body = panel.querySelector('.wat-body');
-  var footer = panel.querySelector('.wat-footer');
+  var loginWarning = panel.querySelector('.wat-login-warning');
   var input = panel.querySelector('.wat-input');
   var sendBtn = panel.querySelector('.wat-send');
   var locBtn = panel.querySelector('.wat-loc-btn');
@@ -208,25 +232,26 @@
 
   bubble.addEventListener('click', function () {
     panel.classList.add('open');
+    loadMessages();
   });
   panel.querySelector('.wat-close').addEventListener('click', function () {
     panel.classList.remove('open');
   });
 
   // ── Login/signup modal ──────────────────────────────────────────────
-  // Page-level, not nested in the chat panel - opened either from the
-  // panel's own "Log In" prompt or from the host site's nav bar via
-  // window.watAuth.open() (see the "Public API" section near the bottom).
+  // Page-level, not nested in the chat panel - opened from the host site's
+  // nav bar via window.watAuth.open() (see healthcare-demo-site/index.html)
+  // or from the login-required banner inside the chat panel.
   var modalBody = modalBackdrop.querySelector('.wat-modal-body');
   var authMode = 'login'; // 'login' | 'signup'
 
   function renderAuthModal() {
     var isLogin = authMode === 'login';
     modalBody.innerHTML =
-      '<h3>' + (isLogin ? 'Log in to chat' : 'Create your account') + '</h3>' +
+      '<h3>' + (isLogin ? 'Log in' : 'Create your account') + '</h3>' +
       '<p class="wat-auth-sub">' + (isLogin
-        ? 'Sign in to start chatting and book appointments or other services.'
-        : 'One account lets you keep track of every chat - appointments, tests, and more.') + '</p>' +
+        ? 'Sign in to confirm bookings and keep track of your chats.'
+        : 'One account lets you confirm bookings and keep track of every chat.') + '</p>' +
       '<div class="wat-auth-error"></div>' +
       (isLogin ? '' : '<input class="wat-auth-name" placeholder="Full name" />') +
       '<input class="wat-auth-email" type="email" placeholder="Email address" />' +
@@ -296,7 +321,7 @@
           localStorage.setItem(TOKEN_KEY, authToken);
           closeAuthModal();
           onAuthChanged(true);
-          enterChatUI();
+          afterLogin();
         } else {
           showAuthError(res.data.error || 'Something went wrong - please try again.');
         }
@@ -310,11 +335,7 @@
       });
   }
 
-  loginPrompt.querySelector('.wat-login-prompt-btn').addEventListener('click', function () {
-    openAuthModal('login');
-  });
-
-  // Lets the host page (e.g. a nav bar "Log In" link/account menu) react to
+  // Lets the host page (e.g. a nav bar "Log In" button) react to
   // sign-in/sign-out without needing to know anything about the chat
   // widget's internals - see window.watAuth below for what dispatches this.
   function onAuthChanged(loggedIn) {
@@ -323,31 +344,58 @@
     }));
   }
 
-  // Resets to a signed-out state: clears the stored token, shows the chat
-  // panel's login prompt in place of the chat, and tells the host page (via
-  // wat:auth) so its own nav UI can update too. Used both for an explicit
-  // logout and for an expired/invalid token discovered mid-session.
+  // Reveals the multi-chat UI (only meaningful for a logged-in patient -
+  // an anonymous visitor has exactly one chat and never sees these).
+  function showChatsUI() {
+    chatsToggle.style.display = '';
+    newChatBtn.style.display = '';
+  }
+  function hideChatsUI() {
+    chatsToggle.style.display = 'none';
+    newChatBtn.style.display = 'none';
+    chatsPanel.classList.remove('open');
+  }
+
+  // Runs right after a successful login/signup, and again on page load if
+  // a stored token turns out to still be valid: claims the CURRENT chat for
+  // this patient (in case they hadn't sent another message yet - see
+  // getOrClaimChat server-side for the case where they had), reveals the
+  // chat-switcher UI, and clears any stale "please log in" banner since
+  // they've just done exactly that.
+  function afterLogin() {
+    showChatsUI();
+    loginWarning.classList.remove('show');
+    if (activeChatId) {
+      fetch(API_BASE + '/widget-api/chats/claim', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+        body: JSON.stringify({ chatId: activeChatId }),
+      }).catch(function () {});
+    }
+    refreshChatsList();
+  }
+
+  // Clears the stored token and drops back to an anonymous-feeling view -
+  // the chat itself (activeChatId, its messages) is untouched, only the
+  // multi-chat UI goes away, since listing/starting named chats requires an
+  // account. Used both for an explicit logout and an expired/invalid token
+  // discovered mid-session.
   function resetToLoggedOut() {
     authToken = null;
     authPatient = null;
-    activeChatId = null;
     localStorage.removeItem(TOKEN_KEY);
-    showLoginPromptUI();
+    hideChatsUI();
     onAuthChanged(false);
   }
 
-  function showLoginPromptUI() {
-    loginPrompt.style.display = 'flex';
-    chatsPanel.classList.remove('open');
-    body.style.display = 'none';
-    footer.style.display = 'none';
-    waRow.style.display = 'none';
-    waForm.classList.remove('open');
-    chatsToggle.style.display = 'none';
-    newChatBtn.style.display = 'none';
-  }
+  loginWarning.querySelector('.wat-login-warning-btn').addEventListener('click', function () {
+    openAuthModal('login');
+  });
+  loginWarning.querySelector('.wat-login-warning-close').addEventListener('click', function () {
+    loginWarning.classList.remove('show');
+  });
 
-  // ── Chat UI (post-login) ────────────────────────────────────────────
+  // ── Chat ─────────────────────────────────────────────────────────────
 
   function resolveMediaUrl(url) {
     if (!url) return url;
@@ -435,22 +483,10 @@
     }
   }
 
-  // Handles an expired/invalid token showing up mid-session (e.g. the JWT's
-  // 30-day expiry lapses while the tab's been open) - bounce back to the
-  // login prompt instead of silently failing every request from here on.
-  function handleAuthFailure() {
-    resetToLoggedOut();
-  }
-
   function loadMessages() {
-    if (!activeChatId) return;
     fetch(API_BASE + '/widget-api/messages?chatId=' + encodeURIComponent(activeChatId), { headers: authHeaders() })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
+      .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data) return;
         render(data.messages || []);
         syncWaRow(data.linkedWhatsapp, data.waLink);
       })
@@ -459,26 +495,26 @@
 
   function send() {
     var text = input.value.trim();
-    if (!text || !activeChatId) return;
+    if (!text) return;
     input.value = '';
     fetch(API_BASE + '/widget-api/message', {
       method: 'POST',
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({ chatId: activeChatId, text: text, language: visitorLanguage || undefined }),
     })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
+      .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data) return;
         if (data.detectedLanguage) {
           visitorLanguage = data.detectedLanguage;
           localStorage.setItem('wat_visitor_language', visitorLanguage);
           langSelect.value = visitorLanguage;
         }
+        // The bot tried to confirm a booking but this chat isn't tied to a
+        // logged-in patient yet - nudge them to the same login modal the
+        // nav bar uses, dismissible so it doesn't block the rest of the chat.
+        if (data.requiresLogin) loginWarning.classList.add('show');
         loadMessages();
-        refreshChatsList(); // keeps the chat list's preview/order in sync
+        if (authToken) refreshChatsList(); // keeps the chat list's preview/order in sync
       })
       .catch(function () {});
   }
@@ -489,7 +525,6 @@
   });
 
   locBtn.addEventListener('click', function () {
-    if (!activeChatId) return;
     if (!navigator.geolocation) {
       alert('Location sharing isn\'t supported by this browser.');
       return;
@@ -507,8 +542,11 @@
             longitude: pos.coords.longitude,
           }),
         })
-          .then(function (r) { if (r.status === 401) handleAuthFailure(); })
-          .then(function () { loadMessages(); })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            if (data && data.requiresLogin) loginWarning.classList.add('show');
+            loadMessages();
+          })
           .catch(function () {})
           .finally(function () { locBtn.disabled = false; locBtn.textContent = '📍'; });
       },
@@ -523,7 +561,7 @@
 
   waSend.addEventListener('click', function () {
     var phone = waPhone.value.trim();
-    if (!phone || !activeChatId) return;
+    if (!phone) return;
     waSend.disabled = true;
     var originalLabel = waSend.textContent;
     waSend.textContent = '…';
@@ -532,12 +570,8 @@
       headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
       body: JSON.stringify({ chatId: activeChatId, phone: phone }),
     })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
+      .then(function (r) { return r.json(); })
       .then(function (data) {
-        if (!data) return;
         if (data.waLink) {
           waForm.classList.remove('open');
           // Not calling window.open() here - it happens async (after this
@@ -562,11 +596,13 @@
       });
   });
 
-  // ── Multiple chats per patient ──────────────────────────────────────
+  // ── Multiple chats (logged-in patients only) ────────────────────────
   // "New Chat" starts a fresh, empty thread (e.g. one to book an
   // appointment, a separate one later for a diagnostic test); the "Chats"
   // button lists every thread this patient has started so far so they can
-  // switch back to an older one instead of losing track of it.
+  // switch back to an older one instead of losing track of it. Neither
+  // button is visible to an anonymous visitor (see showChatsUI/hideChatsUI
+  // above) - without an account there's only ever the one chat.
 
   function formatChatTime(iso) {
     try {
@@ -602,10 +638,7 @@
   function refreshChatsList() {
     if (!authToken) return;
     fetch(API_BASE + '/widget-api/chats', { headers: authHeaders() })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
+      .then(function (r) { return r.status === 200 ? r.json() : null; })
       .then(function (data) {
         if (!data) return;
         chatsCache = data.chats || [];
@@ -617,8 +650,10 @@
   function switchChat(chatId) {
     if (chatId === activeChatId) { chatsPanel.classList.remove('open'); return; }
     activeChatId = chatId;
+    localStorage.setItem(CHAT_ID_KEY, activeChatId);
     renderedCount = 0;
     waLinkedShown = null;
+    loginWarning.classList.remove('show');
     chatsPanel.classList.remove('open');
     renderChatsList();
     loadMessages();
@@ -631,15 +666,14 @@
       method: 'POST',
       headers: authHeaders(),
     })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
+      .then(function (r) { return r.status === 201 ? r.json() : null; })
       .then(function (data) {
         if (!data || !data.chatId) return;
         activeChatId = data.chatId;
+        localStorage.setItem(CHAT_ID_KEY, activeChatId);
         renderedCount = 0;
         waLinkedShown = null;
+        loginWarning.classList.remove('show');
         render([]);
         chatsPanel.classList.remove('open');
         loadMessages();
@@ -655,42 +689,6 @@
     if (chatsPanel.classList.contains('open')) refreshChatsList();
   });
 
-  // ── Boot ─────────────────────────────────────────────────────────────
-
-  function showChatUI() {
-    loginPrompt.style.display = 'none';
-    body.style.display = 'flex';
-    footer.style.display = 'flex';
-    waRow.style.display = 'flex';
-    chatsToggle.style.display = '';
-    newChatBtn.style.display = '';
-  }
-
-  // After a successful login/signup (or a valid token restored on page
-  // load): show the chat UI, then load this patient's chats - resuming
-  // their most recently active one, or creating their very first chat if
-  // they have none yet.
-  function enterChatUI() {
-    showChatUI();
-    fetch(API_BASE + '/widget-api/chats', { headers: authHeaders() })
-      .then(function (r) {
-        if (r.status === 401) { handleAuthFailure(); return null; }
-        return r.json();
-      })
-      .then(function (data) {
-        if (!data) return;
-        chatsCache = data.chats || [];
-        if (chatsCache.length) {
-          activeChatId = chatsCache[0].chatId; // most recently created/updated - see GET /widget-api/chats ordering
-          renderChatsList();
-          loadMessages();
-        } else {
-          startNewChat();
-        }
-      })
-      .catch(function () {});
-  }
-
   // ── Public API ───────────────────────────────────────────────────────
   // Lets the host page wire up its own "Log In" nav link/account menu
   // instead of the chat widget owning that UI itself - see
@@ -702,15 +700,18 @@
     getPatient: function () { return authPatient; },
   };
 
-  loginPrompt.style.display = 'flex'; // default panel state until the token check below (if any) resolves
+  // ── Boot ─────────────────────────────────────────────────────────────
+  // Chat is available immediately, no login gate - loads whatever's already
+  // in this chat (empty for a brand new visitor) right away.
+  loadMessages();
 
   if (authToken) {
-    // Validate the stored token before committing to the chat UI - it may
-    // have expired since the last visit. Optimistically tell the host page
-    // "logged in" right away (a token being present is a good enough
-    // signal for e.g. a nav bar to avoid a login-link flash), then correct
-    // that via handleAuthFailure()'s wat:auth(false) dispatch if the token
-    // turns out to be stale.
+    // Validate the stored token in the background - it may have expired
+    // since the last visit. Optimistically tell the host page "logged in"
+    // right away (a token being present is a good enough signal for e.g. a
+    // nav bar to avoid a login-link flash), then correct that via
+    // resetToLoggedOut()'s wat:auth(false) dispatch if the token turns out
+    // to be stale.
     onAuthChanged(true);
     fetch(API_BASE + '/widget-api/me', { headers: authHeaders() })
       .then(function (r) { return r.status === 200 ? r.json() : null; })
@@ -718,7 +719,7 @@
         if (data && data.patient) {
           authPatient = data.patient;
           onAuthChanged(true);
-          enterChatUI();
+          afterLogin();
         } else {
           resetToLoggedOut();
         }
@@ -727,6 +728,6 @@
   }
 
   setInterval(function () {
-    if (panel.classList.contains('open') && authToken && activeChatId) loadMessages();
+    if (panel.classList.contains('open')) loadMessages();
   }, 4000);
 })();

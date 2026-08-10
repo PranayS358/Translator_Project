@@ -45,9 +45,17 @@ function describeForBot(message) {
 // just wherever they happened to send THIS particular message. Also flips
 // conversation.urgent on when the bot signals an active ambulance/emergency
 // exchange (see the [[URGENT]] marker in groq.js's systemPrompt), and
-// creates Appointment/TestBooking rows when a booking request was noted.
+// creates Appointment/TestBooking rows when a booking request was noted -
+// unless this is an anonymous (not logged in) webchat visitor, in which
+// case the request is intentionally NOT saved as a real booking yet (see
+// the loggedIn check below); the caller surfaces the returned
+// requiresLogin flag so the widget can prompt them to sign in.
+//
+// Returns { requiresLogin } - true the moment a booking was attempted by an
+// anonymous webchat visitor, so src/routes/widget.js's /message and
+// /location handlers can pass it through to the widget.
 async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
-  if (conversation.muted || !conversation.botEnabled) return;
+  if (conversation.muted || !conversation.botEnabled) return { requiresLogin: false };
   try {
     const recent = await prisma.message.findMany({
       where: { conversationId: conversation.id },
@@ -59,8 +67,15 @@ async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
       .map((m) => ({ role: m.direction === 'inbound' ? 'user' : 'assistant', content: describeForBot(m) }))
       .filter((m) => m.content);
 
-    const auto = await getAutoReply(history);
-    if (!auto || auto.escalate || !auto.reply) return;
+    // Only webchat has a login concept at all (see src/auth.js,
+    // window.watAuth in chat-widget.js) - a native WhatsApp conversation
+    // (or one merged in via linkedWhatsapp) is always treated as "logged
+    // in" here, since a real phone number is already a strong identity on
+    // its own and WhatsApp has no sign-in UI to send anyone to.
+    const loggedIn = conversation.channel !== 'webchat' || !!conversation.patientId;
+
+    const auto = await getAutoReply(history, { loggedIn });
+    if (!auto || auto.escalate || !auto.reply) return { requiresLogin: false };
 
     const { translatedText: botReplyTranslated } = await translateBetween(auto.reply, primaryLanguage, customerLanguage);
     await addMessage(conversation.id, {
@@ -89,16 +104,25 @@ async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
     // desk will confirm" (see the booking rules in groq.js) - but we still
     // track it as a real Appointment row internally so src/reminders.js has
     // something concrete to send 24h/1h reminders and a post-visit
-    // follow-up against.
+    // follow-up against. Skipped for an anonymous webchat visitor - the
+    // system prompt already asks the bot to tell them to log in instead of
+    // confirming, but that's just phrasing; this is the actual gate, so a
+    // booking can never be created without a real patient behind it even if
+    // the model's wording slips.
+    let requiresLogin = false;
     if (auto.appointment) {
-      await prisma.appointment.create({
-        data: {
-          conversationId: conversation.id,
-          department: auto.appointment.department,
-          doctorName: auto.appointment.doctor,
-          scheduledAt: auto.appointment.scheduledAt,
-        },
-      });
+      if (loggedIn) {
+        await prisma.appointment.create({
+          data: {
+            conversationId: conversation.id,
+            department: auto.appointment.department,
+            doctorName: auto.appointment.doctor,
+            scheduledAt: auto.appointment.scheduledAt,
+          },
+        });
+      } else {
+        requiresLogin = true;
+      }
     }
 
     // Same pattern as auto.appointment above, but for a standalone
@@ -106,18 +130,25 @@ async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
     // booking flow in groq.js) - gives src/reminders.js a TestBooking row
     // to send 24h/1h reminders against.
     if (auto.testBooking) {
-      await prisma.testBooking.create({
-        data: {
-          conversationId: conversation.id,
-          department: auto.testBooking.department,
-          testName: auto.testBooking.test,
-          fee: auto.testBooking.fee,
-          scheduledAt: auto.testBooking.scheduledAt,
-        },
-      });
+      if (loggedIn) {
+        await prisma.testBooking.create({
+          data: {
+            conversationId: conversation.id,
+            department: auto.testBooking.department,
+            testName: auto.testBooking.test,
+            fee: auto.testBooking.fee,
+            scheduledAt: auto.testBooking.scheduledAt,
+          },
+        });
+      } else {
+        requiresLogin = true;
+      }
     }
+
+    return { requiresLogin };
   } catch (err) {
     console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
+    return { requiresLogin: false };
   }
 }
 
