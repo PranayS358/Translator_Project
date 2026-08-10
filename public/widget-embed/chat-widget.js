@@ -106,7 +106,14 @@
 
   var panel = document.createElement('div');
   panel.className = 'wat-panel';
-  panel.style.position = 'relative'; // anchors the absolutely-positioned chats overlay
+  // No inline position here - the .wat-panel CSS class already sets
+  // position:fixed (floating bottom-right), which on its own already
+  // establishes the containing block the absolutely-positioned
+  // .wat-chats-panel overlay needs. Setting position:relative here as an
+  // inline style used to override that fixed positioning entirely (inline
+  // styles beat class rules) and silently broke the whole panel - it was
+  // still in the DOM and "open", just laid out in normal document flow
+  // instead of floating over the page, so nobody could see it.
   panel.innerHTML =
     '<div class="wat-header">' +
       '<span class="wat-title">' + TITLE + '</span>' +
