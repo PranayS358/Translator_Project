@@ -6,6 +6,7 @@ const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage } = require('../conversations');
 const { verifyMetaSignature } = require('../security');
 const { downloadWhatsAppMedia } = require('../whatsapp');
+const { runAutoReply } = require('../autoReply');
 const asyncHandler = require('../asyncHandler');
 
 // Turns a raw WhatsApp webhook `message` object into the shape addMessage()
@@ -175,6 +176,21 @@ router.post('/', asyncHandler(async (req, res) => {
     }
 
     console.log(`📩 [whatsapp${linkedConversation ? '→webchat' : ''}] [${content.messageType}] [${detectedLanguage} → ${primaryLanguage}] ${contactKey}: "${text}" → "${translatedText}"`);
+
+    // Auto-reply via Groq (see src/autoReply.js) - the same bot that
+    // answers webchat visitors now also answers here, and delivers its
+    // reply back over WhatsApp (runAutoReply's waNumber branch handles
+    // both a native 'whatsapp'-channel conversation and one merged in via
+    // linkedWhatsapp). No-ops if GROQ_API_KEY isn't set, a human has taken
+    // over (botEnabled === false), or Groq decides the message needs one.
+    // detectedLanguage is 'n/a' for placeholder-only messages (bare media,
+    // location, contact shares) - fall back to the conversation's own
+    // locked language, or plain English, so we're never handing 'n/a' to
+    // the translator as if it were a real language code.
+    const replyLanguage = (detectedLanguage && detectedLanguage !== 'n/a')
+      ? detectedLanguage
+      : (conversation.customerLanguage || 'en');
+    await runAutoReply(conversation, primaryLanguage, replyLanguage);
   } catch (err) {
     console.error('WhatsApp webhook processing error:', err.message);
   }

@@ -11,7 +11,7 @@ const prisma = require('../db');
 const { translateBetween, detectAndTranslate } = require('../translate');
 const { normalizePhone } = require('../phone');
 const { getOrCreateConversation, addMessage, toPublicMessages } = require('../conversations');
-const { getAutoReply, nearestBranch } = require('../groq');
+const { runAutoReply } = require('../autoReply');
 const asyncHandler = require('../asyncHandler');
 
 router.use((req, res, next) => {
@@ -25,102 +25,6 @@ router.use((req, res, next) => {
 async function getPrimaryLanguage() {
   const settings = await prisma.settings.upsert({ where: { id: 1 }, update: {}, create: { id: 1 } });
   return settings.primaryLanguage;
-}
-
-// Turns a stored message into one line of context for the bot. Plain
-// placeholders like "[image]" carry no useful text, but a shared location
-// is exactly the thing the ambulance flow AND the nearest-branch finder
-// (src/groq.js) need to see and react to - so unlike other placeholders,
-// describe it with an actual coordinate/maps link (and the nearest branch,
-// computed here rather than left for the model to guess at) instead of
-// dropping it from history entirely.
-function describeForBot(message) {
-  if (message.messageType === 'location') {
-    let coords = {};
-    try { coords = JSON.parse(message.extra || '{}'); } catch (err) { /* ignore */ }
-    if (coords.latitude != null && coords.longitude != null) {
-      const mapsUrl = `https://www.google.com/maps?q=${coords.latitude},${coords.longitude}`;
-      const branch = nearestBranch(coords.latitude, coords.longitude);
-      const branchNote = branch
-        ? ` Nearest branch: ${branch.name}, ${branch.address} (~${branch.distanceKm} km away).`
-        : '';
-      return `[Patient shared their location: ${mapsUrl}.${branchNote}]`;
-    }
-  }
-  const text = message.direction === 'inbound' ? (message.translatedText || message.originalText) : message.originalText;
-  if (text && /^\[[a-z]+\]$/i.test(text)) return null; // other placeholders (e.g. "[image]") - nothing useful to hand the bot
-  return text;
-}
-
-// Shared by POST /message and POST /location - runs the Groq auto-reply
-// (src/groq.js) against a conversation's recent history and, if it produces
-// a reply, translates and saves it. Also flips conversation.urgent on when
-// the bot signals an active ambulance/emergency exchange (see the
-// [[URGENT]] marker in groq.js's systemPrompt), so agents can spot it in
-// the dashboard sidebar without relying on the regular unread badge alone.
-async function runAutoReply(conversation, primaryLanguage, customerLanguage) {
-  if (conversation.muted || !conversation.botEnabled) return;
-  try {
-    const recent = await prisma.message.findMany({
-      where: { conversationId: conversation.id },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-    });
-    const history = recent
-      .reverse()
-      .map((m) => ({ role: m.direction === 'inbound' ? 'user' : 'assistant', content: describeForBot(m) }))
-      .filter((m) => m.content);
-
-    const auto = await getAutoReply(history);
-    if (!auto || auto.escalate || !auto.reply) return;
-
-    const { translatedText: botReplyTranslated } = await translateBetween(auto.reply, primaryLanguage, customerLanguage);
-    await addMessage(conversation.id, {
-      direction: 'outbound',
-      originalText: auto.reply,
-      detectedLanguage: 'bot',
-      translatedText: botReplyTranslated,
-      targetLanguage: customerLanguage,
-    });
-
-    if (auto.urgent) {
-      await prisma.conversation.update({ where: { id: conversation.id }, data: { urgent: true } });
-    }
-
-    // The bot only ever tells the PATIENT their request is "noted, front
-    // desk will confirm" (see the booking rules in groq.js) - but we still
-    // track it as a real Appointment row internally so src/reminders.js has
-    // something concrete to send 24h/1h reminders and a post-visit
-    // follow-up against.
-    if (auto.appointment) {
-      await prisma.appointment.create({
-        data: {
-          conversationId: conversation.id,
-          department: auto.appointment.department,
-          doctorName: auto.appointment.doctor,
-          scheduledAt: auto.appointment.scheduledAt,
-        },
-      });
-    }
-
-    // Same pattern as auto.appointment above, but for a standalone
-    // diagnostic test booking (see the [[TESTBOOK|...]] marker and test
-    // booking flow in groq.js) - gives src/reminders.js a TestBooking row
-    // to send 24h/1h reminders against.
-    if (auto.testBooking) {
-      await prisma.testBooking.create({
-        data: {
-          conversationId: conversation.id,
-          department: auto.testBooking.department,
-          testName: auto.testBooking.test,
-          fee: auto.testBooking.fee,
-          scheduledAt: auto.testBooking.scheduledAt,
-        },
-      });
-    }
-  } catch (err) {
-    console.error('Auto-reply (Groq) failed, leaving for a human:', err.message);
-  }
 }
 
 // A visitor sends a message from the widget. Figures out (or reuses) the
@@ -192,12 +96,13 @@ router.post('/message', asyncHandler(async (req, res) => {
     });
   }
 
-  // Instant auto-reply via Groq (see src/groq.js and runAutoReply above) —
+  // Instant auto-reply via Groq (see src/autoReply.js and src/groq.js) —
   // no-ops silently if GROQ_API_KEY isn't set, if a human has already taken
   // over this conversation (botEnabled === false), or if Groq itself
   // decides the question needs a human. Runs in the same request as the
   // visitor's message so the reply is already saved by the time the
-  // widget's next poll (~4s) comes around.
+  // widget's next poll (~4s) comes around. Also delivers over WhatsApp too
+  // when this conversation is linked (see runAutoReply in autoReply.js).
   await runAutoReply(conversation, primaryLanguage, customerLanguage);
 
   res.json({ message: saved, detectedLanguage: customerLanguage });
@@ -302,18 +207,18 @@ router.post('/link-whatsapp', asyncHandler(async (req, res) => {
     data: { linkedWhatsapp: null },
   });
 
-  // botEnabled: false — once a patient asks to continue on their own
-  // WhatsApp, treat that the same as a human agent stepping in (see
-  // runAutoReply()'s botEnabled check in this file): the bot stops
-  // auto-replying to any further messages on this conversation, on EITHER
-  // channel, from here on. Reasoning: "continue on WhatsApp" is a deliberate
-  // request to move to a real, personal channel for the rest of the
-  // conversation, not a request for the same bot to keep answering there -
-  // staff can always flip it back on via PATCH /api/conversations/:id like
-  // any other conversation.
+  // NOTE: we deliberately do NOT touch botEnabled here. Linking WhatsApp
+  // used to also flip botEnabled off (treating "continue on WhatsApp" like
+  // a human agent taking over), but that meant the bot went silent on
+  // BOTH channels the moment a patient linked - including on WhatsApp
+  // itself, which defeated the point of linking. Now the bot keeps
+  // answering wherever the patient actually messages from (see
+  // runAutoReply in src/autoReply.js, and its WhatsApp-delivery branch for
+  // linkedWhatsapp conversations); staff can still silence it manually via
+  // PATCH /api/conversations/:id if they take over by hand.
   await prisma.conversation.update({
     where: { id: conversation.id },
-    data: { linkedWhatsapp: normalized, botEnabled: false },
+    data: { linkedWhatsapp: normalized },
   });
 
   res.json({ linked: true, businessNumber, waLink: `https://wa.me/${businessNumber}` });
