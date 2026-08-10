@@ -247,7 +247,7 @@ router.get('/messages', asyncHandler(async (req, res) => {
   const conversation = await prisma.conversation.findUnique({
     where: { channel_contactKey: { channel: 'webchat', contactKey: visitorId } },
   });
-  if (!conversation) return res.json({ messages: [] });
+  if (!conversation) return res.json({ messages: [], linkedWhatsapp: null });
 
   const messages = await prisma.message.findMany({
     where: { conversationId: conversation.id },
@@ -255,7 +255,26 @@ router.get('/messages', asyncHandler(async (req, res) => {
   });
   // Polled every 4s by the widget - see toPublicMessage in conversations.js
   // for why this can't ship raw base64 media on every poll.
-  res.json({ messages: toPublicMessages(messages) });
+  //
+  // linkedWhatsapp is included so the widget can keep its "Linked!" banner
+  // in sync with the CURRENT conversation row on every poll, instead of
+  // just flipping it on once client-side at the moment of linking and
+  // never touching it again. That one-time flag used to go stale and lie:
+  // if this conversation got deleted (see DELETE /api/conversations/:id)
+  // and the visitor then sent a new message in the same still-open browser
+  // tab, getOrCreateConversation() creates a brand new row under the same
+  // visitorId - unlinked - but the widget kept showing "Linked!" from the
+  // old, now-gone conversation, since nothing ever told it otherwise. A
+  // patient's WhatsApp replies would then silently land nowhere the widget
+  // could show them (see also the businessNumber check in link-whatsapp
+  // below for why we don't compute a waLink here too - only bother once
+  // WHATSAPP_BUSINESS_DISPLAY_NUMBER is actually configured).
+  const businessNumber = process.env.WHATSAPP_BUSINESS_DISPLAY_NUMBER;
+  res.json({
+    messages: toPublicMessages(messages),
+    linkedWhatsapp: conversation.linkedWhatsapp || null,
+    waLink: conversation.linkedWhatsapp && businessNumber ? `https://wa.me/${businessNumber}` : null,
+  });
 }));
 
 // "Continue on WhatsApp": the visitor types their own WhatsApp number into

@@ -111,7 +111,11 @@
   var sendBtn = panel.querySelector('.wat-send');
   var locBtn = panel.querySelector('.wat-loc-btn');
   var waRow = panel.querySelector('.wat-wa-row');
-  var waToggle = panel.querySelector('.wat-wa-toggle');
+  // No separate `waToggle` reference kept here - waRow's "Continue there"
+  // button gets replaced/re-bound by syncWaRow() below every time the
+  // linked status changes (or on first load), so the toggle listener lives
+  // there instead of on a variable that could go stale the moment that
+  // happens.
   var waForm = panel.querySelector('.wat-wa-form');
   var waPhone = panel.querySelector('.wat-wa-phone');
   var waSend = panel.querySelector('.wat-wa-send');
@@ -232,10 +236,39 @@
     renderedCount = messages.length;
   }
 
+  // Keeps the "Prefer WhatsApp?" row honest on every poll, instead of only
+  // ever being set once client-side at the moment of a successful link (see
+  // the waSend handler below) and never touched again. That one-time flag
+  // used to go stale: if this conversation got deleted (e.g. via "Delete
+  // chat" in the dashboard) and the visitor kept the same tab open, the
+  // NEXT message they sent silently created a brand new, unlinked
+  // conversation row under the same visitorId - but the banner kept saying
+  // "Linked!" from the old, now-gone one, so a patient could reply on
+  // WhatsApp and never see it reflected here (their message went to
+  // whichever OTHER conversation, if any, still actually held that link).
+  var waLinkedShown = null; // tri-state cache (null/true/false) - avoids re-touching the DOM every 4s poll when nothing changed
+  function syncWaRow(linkedWhatsapp, waLink) {
+    var isLinked = !!linkedWhatsapp;
+    if (isLinked === waLinkedShown) return;
+    waLinkedShown = isLinked;
+    if (isLinked) {
+      waForm.classList.remove('open');
+      waRow.innerHTML = '<span>Linked! </span><a href="' + waLink + '" target="_blank" rel="noopener">Open WhatsApp</a>';
+    } else {
+      waRow.innerHTML = '<span>Prefer WhatsApp?</span><button class="wat-wa-toggle">Continue there</button>';
+      waRow.querySelector('.wat-wa-toggle').addEventListener('click', function () {
+        waForm.classList.toggle('open');
+      });
+    }
+  }
+
   function loadMessages() {
     fetch(API_BASE + '/widget-api/messages?visitorId=' + encodeURIComponent(visitorId))
       .then(function (r) { return r.json(); })
-      .then(function (data) { render(data.messages || []); })
+      .then(function (data) {
+        render(data.messages || []);
+        syncWaRow(data.linkedWhatsapp, data.waLink);
+      })
       .catch(function () {});
   }
 
@@ -308,9 +341,10 @@
     );
   });
 
-  waToggle.addEventListener('click', function () {
-    waForm.classList.toggle('open');
-  });
+  // Not attached here anymore - the very first loadMessages() poll (fired by
+  // showChatUI() above) immediately rebuilds waRow's markup via syncWaRow()
+  // and (re)attaches this same toggle behavior to whatever button ends up in
+  // it. See syncWaRow()'s "not linked" branch.
 
   waSend.addEventListener('click', function () {
     var phone = waPhone.value.trim();
@@ -324,6 +358,10 @@
       .then(function (data) {
         if (data.waLink) {
           waForm.classList.remove('open');
+          // Instant feedback rather than waiting up to 4s for the next
+          // poll - syncWaRow() (called from loadMessages()) will also pick
+          // this up on schedule and is what keeps it honest from here on.
+          waLinkedShown = true;
           waRow.innerHTML = '<span>Linked! </span><a href="' + data.waLink + '" target="_blank" rel="noopener">Open WhatsApp</a>';
           window.open(data.waLink, '_blank');
         } else if (data.error) {
