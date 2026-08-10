@@ -154,14 +154,28 @@ router.delete('/conversations/:id/messages', asyncHandler(async (req, res) => {
   res.json({ cleared: true });
 }));
 
-// Delete chat — removes the conversation (and its messages) from the list
-// entirely. Messages are deleted first since they reference the conversation.
+// Delete chat — removes the conversation (and everything that references
+// it) from the list entirely. Messages, Appointment, and TestBooking rows
+// all have an ON DELETE RESTRICT foreign key back to Conversation (see
+// prisma/schema.prisma) - deliberately, so a stray reminder job can never
+// silently lose its conversation - which means every one of them has to be
+// cleared here first or conversation.delete() below throws a foreign key
+// violation. That violation used to get caught and misreported as a plain
+// 404 "Conversation not found", which is why deleting a chat that had a
+// booked appointment/test attached silently failed no matter how many
+// times you retried it - the conversation was never actually missing.
 router.delete('/conversations/:id', asyncHandler(async (req, res) => {
-  await prisma.message.deleteMany({ where: { conversationId: req.params.id } });
+  const id = req.params.id;
+  await Promise.all([
+    prisma.message.deleteMany({ where: { conversationId: id } }),
+    prisma.appointment.deleteMany({ where: { conversationId: id } }),
+    prisma.testBooking.deleteMany({ where: { conversationId: id } }),
+  ]);
   try {
-    await prisma.conversation.delete({ where: { id: req.params.id } });
+    await prisma.conversation.delete({ where: { id } });
     res.json({ deleted: true });
   } catch (err) {
+    console.error(`Failed to delete conversation ${id}:`, err.message);
     res.status(404).json({ error: 'Conversation not found' });
   }
 }));
@@ -186,10 +200,19 @@ router.post('/conversations/:id/merge', asyncHandler(async (req, res) => {
   ]);
   if (!source || !target) return res.status(404).json({ error: 'Conversation not found' });
 
-  await prisma.message.updateMany({
-    where: { conversationId: sourceId },
-    data: { conversationId: targetId },
-  });
+  // Move everything that references the source conversation over to the
+  // target - not just messages. Appointment/TestBooking rows have an
+  // ON DELETE RESTRICT foreign key back to Conversation (see
+  // prisma/schema.prisma), so leaving them behind would both strand a
+  // patient's booked appointment/test on a conversation that's about to
+  // disappear (breaking their 24h/1h reminders) AND make the
+  // conversation.delete() below fail with a constraint violation - the
+  // same bug that used to make "Delete chat" silently fail.
+  await Promise.all([
+    prisma.message.updateMany({ where: { conversationId: sourceId }, data: { conversationId: targetId } }),
+    prisma.appointment.updateMany({ where: { conversationId: sourceId }, data: { conversationId: targetId } }),
+    prisma.testBooking.updateMany({ where: { conversationId: sourceId }, data: { conversationId: targetId } }),
+  ]);
 
   const data = { unreadCount: Math.max(source.unreadCount, target.unreadCount) };
   if (!target.linkedWhatsapp && source.linkedWhatsapp) data.linkedWhatsapp = source.linkedWhatsapp;
