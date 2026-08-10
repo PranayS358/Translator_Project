@@ -349,6 +349,16 @@
   waSend.addEventListener('click', function () {
     var phone = waPhone.value.trim();
     if (!phone) return;
+    // This request silently doing nothing on failure is exactly how a
+    // patient can walk away believing they're linked when they're not -
+    // they see no error, switch to WhatsApp, and their reply lands in a
+    // brand new, unlinked conversation instead of this one. So: disable
+    // the button while in flight (no accidental double-submits), and make
+    // BOTH a server-side error and a network/CORS failure clearly visible
+    // and retryable, instead of failing silently.
+    waSend.disabled = true;
+    var originalLabel = waSend.textContent;
+    waSend.textContent = '…';
     fetch(API_BASE + '/widget-api/link-whatsapp', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -361,14 +371,27 @@
           // Instant feedback rather than waiting up to 4s for the next
           // poll - syncWaRow() (called from loadMessages()) will also pick
           // this up on schedule and is what keeps it honest from here on.
+          // Deliberately NOT calling window.open() here: that call happens
+          // async (after this fetch resolves), which most mobile browsers'
+          // popup blockers treat as not user-initiated and silently block -
+          // another way this "worked" but the patient never actually saw
+          // WhatsApp open. The rendered "Open WhatsApp" link below is a
+          // real click the patient makes themselves, so it always works.
           waLinkedShown = true;
           waRow.innerHTML = '<span>Linked! </span><a href="' + data.waLink + '" target="_blank" rel="noopener">Open WhatsApp</a>';
-          window.open(data.waLink, '_blank');
         } else if (data.error) {
-          alert(data.error);
+          alert('Couldn\'t link WhatsApp: ' + data.error);
+        } else {
+          alert('Couldn\'t link WhatsApp - please try again.');
         }
       })
-      .catch(function () {});
+      .catch(function () {
+        alert('Couldn\'t link WhatsApp - check your connection and try again.');
+      })
+      .finally(function () {
+        waSend.disabled = false;
+        waSend.textContent = originalLabel;
+      });
   });
 
   setInterval(function () {
