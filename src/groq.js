@@ -318,7 +318,7 @@ async function getAutoReply(history) {
   try {
     const res = await axios.post(
       GROQ_API_URL,
-      { model: MODEL, messages, temperature: 0.3, max_tokens: 300 },
+      { model: MODEL, messages, temperature: 0.3, max_tokens: 400 },
       { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 15000 }
     );
     reply = res.data?.choices?.[0]?.message?.content?.trim();
@@ -327,21 +327,39 @@ async function getAutoReply(history) {
     // plain-text reply in a bogus "tool call" envelope instead of returning
     // it as normal content - its harmony chat template leaking a
     // channel/tool-call structure through even though we never define any
-    // tools - which the API then rejects with a tool_use_failed error.
-    // Seen in practice on longer, list-heavy replies (e.g. reciting the
-    // doctor/test directories below). The reply text the model actually
-    // meant to send is still sitting in that rejected call's "arguments",
-    // so recover it from there instead of dropping the reply / silently
-    // escalating to a human over what's really just a formatting quirk.
+    // tools - which the API then rejects with a tool_use_failed error. Seen
+    // in practice on longer, list-heavy replies (e.g. reciting the
+    // doctor/test directories below).
+    //
+    // The reply text the model actually meant to send is still sitting in
+    // that rejected call's "arguments", so recover it from there instead of
+    // dropping the reply / silently escalating to a human over what's
+    // really just a formatting quirk. failed_generation isn't reliably
+    // valid JSON though - in production this has shown up both as a
+    // properly quoted arguments value (e.g. `"arguments": "text..."}`,
+    // which JSON.parse can handle) AND as a raw unquoted one (e.g.
+    // `"arguments": text...}`, which is NOT valid JSON and makes
+    // JSON.parse throw every time). A plain regex pull of everything after
+    // `"arguments":` handles both shapes, plus a fully truncated one with
+    // no closing brace at all, since it doesn't require the value to be
+    // well-formed JSON in the first place.
     const errData = err.response?.data?.error;
     if (errData?.code === 'tool_use_failed' && typeof errData.failed_generation === 'string') {
-      try {
-        const parsed = JSON.parse(errData.failed_generation);
-        if (typeof parsed?.arguments === 'string' && parsed.arguments.trim()) {
-          reply = parsed.arguments.trim();
-        }
-      } catch (parseErr) {
-        // couldn't recover it - reply stays undefined, handled below
+      const argsMatch = errData.failed_generation.match(/"arguments":\s*([\s\S]*)$/);
+      if (argsMatch) {
+        let recovered = argsMatch[1].replace(/^"/, '').replace(/["}\s]+$/, '').trim();
+        // The unquoted shape above contains real newline characters already,
+        // but the properly-quoted shape (a genuine JSON string) still has
+        // them as literal \n escapes at this point since we bypassed
+        // JSON.parse - unescape the common ones so the patient sees actual
+        // line breaks either way instead of literal backslash-n text.
+        recovered = recovered
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t')
+          .replace(/\\"/g, '"')
+          .replace(/\\\\/g, '\\');
+        if (recovered) reply = recovered;
       }
     }
     if (reply === undefined) {
