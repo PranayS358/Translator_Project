@@ -283,9 +283,18 @@ router.post('/link-whatsapp', asyncHandler(async (req, res) => {
     data: { linkedWhatsapp: null },
   });
 
+  // botEnabled: false — once a patient asks to continue on their own
+  // WhatsApp, treat that the same as a human agent stepping in (see
+  // runAutoReply()'s botEnabled check in this file): the bot stops
+  // auto-replying to any further messages on this conversation, on EITHER
+  // channel, from here on. Reasoning: "continue on WhatsApp" is a deliberate
+  // request to move to a real, personal channel for the rest of the
+  // conversation, not a request for the same bot to keep answering there -
+  // staff can always flip it back on via PATCH /api/conversations/:id like
+  // any other conversation.
   await prisma.conversation.update({
     where: { id: conversation.id },
-    data: { linkedWhatsapp: normalized },
+    data: { linkedWhatsapp: normalized, botEnabled: false },
   });
 
   res.json({ linked: true, businessNumber, waLink: `https://wa.me/${businessNumber}` });
